@@ -42,7 +42,7 @@ void DeferredPollWaker::Run(std::stop_token stop) {
     while (!stop.stop_requested()) {
         {
             std::unique_lock lock{mutex};
-            cv.wait(lock, stop, [this] { return waiters > 0; });
+            Common::CondvarWait(cv, lock, stop, [this] { return waiters > 0; });
         }
         if (stop.stop_requested()) {
             break;

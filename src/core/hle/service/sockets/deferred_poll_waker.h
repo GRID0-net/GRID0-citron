@@ -5,8 +5,8 @@
 
 #include <condition_variable>
 #include <mutex>
-#include <stop_token>
-#include <thread>
+
+#include "common/polyfill_thread.h"
 
 namespace Kernel {
 class KEvent;
