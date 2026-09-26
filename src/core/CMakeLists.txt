@@ -410,6 +410,8 @@ add_library(core STATIC
     hle/service/acc/errors.h
     hle/service/acc/profile_manager.cpp
     hle/service/acc/profile_manager.h
+    hle/service/acc/switchnet_account.cpp
+    hle/service/acc/switchnet_account.h
     hle/service/am/am.cpp
     hle/service/am/am.h
     hle/service/am/am_results.h
@@ -1279,6 +1281,8 @@ endif()
 if (ENABLE_WEB_SERVICE)
     target_compile_definitions(core PRIVATE -DENABLE_WEB_SERVICE)
     target_link_libraries(core PRIVATE web_service)
+    # The SwitchNet account login (hle/service/acc/switchnet_account.cpp) is an HTTPS client.
+    target_link_libraries(core PRIVATE httplib::httplib)
 endif()
 
 if (HAS_NCE)

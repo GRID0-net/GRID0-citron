@@ -30,6 +30,7 @@
 #include "core/hle/service/acc/dauth_0.h"
 #include "core/hle/service/acc/errors.h"
 #include "core/hle/service/acc/profile_manager.h"
+#include "core/hle/service/acc/switchnet_account.h"
 #include "core/hle/service/cmif_serialization.h"
 #include "core/hle/service/glue/glue_manager.h"
 #include "core/hle/service/ns/ns_types.h"
@@ -597,6 +598,24 @@ public:
     }
 };
 
+// Writes the SwitchNet-signed id token into the request's output buffer and returns its size, or
+// returns 0 -- what this stub always returned -- when SwitchNet is not configured or the login
+// failed. A token larger than the buffer the game offered is refused rather than truncated: a
+// truncated JWT is corrupt in a way the game server reports far from here.
+static u32 WriteSwitchNetIdToken(HLERequestContext& ctx) {
+    const std::optional<std::string> token = SwitchNet::GetIdToken();
+    if (!token) {
+        return 0;
+    }
+    if (!ctx.CanWriteBuffer() || token->size() > ctx.GetWriteBufferSize()) {
+        LOG_ERROR(Service_ACC, "The SwitchNet id token is {} bytes; the game offered {}",
+                  token->size(), ctx.CanWriteBuffer() ? ctx.GetWriteBufferSize() : 0);
+        return 0;
+    }
+    ctx.WriteBuffer(token->data(), token->size());
+    return static_cast<u32>(token->size());
+}
+
 class EnsureTokenIdCacheAsyncInterface final : public IAsyncContext {
 public:
     explicit EnsureTokenIdCacheAsyncInterface(Core::System& system_) : IAsyncContext{system_} {
@@ -605,11 +624,11 @@ public:
     ~EnsureTokenIdCacheAsyncInterface() = default;
 
     void LoadIdTokenCache(HLERequestContext& ctx) {
-        LOG_WARNING(Service_ACC, "(STUBBED) called");
+        LOG_DEBUG(Service_ACC, "called");
 
         IPC::ResponseBuilder rb{ctx, 3};
         rb.Push(ResultSuccess);
-        rb.Push(0);
+        rb.Push(WriteSwitchNetIdToken(ctx));
     }
 
 protected:
@@ -763,7 +782,15 @@ private:
     }
 
     void EnsureIdTokenCacheAsync(HLERequestContext& ctx) {
-        LOG_WARNING(Service_ACC, "(STUBBED) called");
+        LOG_DEBUG(Service_ACC, "called");
+
+        // The login happens here, where the game expects network work to be done, so that
+        // LoadIdTokenCache is normally a cache lookup. It completes before this returns: against
+        // a server on the operator's own network that is milliseconds, and it saves completing
+        // an async context from a host thread.
+        if (SwitchNet::IsConfigured()) {
+            SwitchNet::GetIdToken();
+        }
 
         IPC::ResponseBuilder rb{ctx, 2, 0, 1};
         rb.Push(ResultSuccess);
@@ -777,12 +804,12 @@ private:
     }
 
     void LoadIdTokenCache(HLERequestContext& ctx) {
-        LOG_WARNING(Service_ACC, "(STUBBED) called");
+        LOG_DEBUG(Service_ACC, "called");
 
         IPC::ResponseBuilder rb{ctx, 4};
         rb.Push(ResultSuccess);
-        rb.Push(0); // token size
-        rb.Push(0); // unknown
+        rb.Push(WriteSwitchNetIdToken(ctx)); // token size
+        rb.Push(0);                          // unknown
     }
 
     void GetNintendoAccountUserResourceCacheForApplication(HLERequestContext& ctx) {
