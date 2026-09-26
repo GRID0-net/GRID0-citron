@@ -153,7 +153,10 @@ CMAKE_DEPENDENT_OPTION(CITRON_USE_FASTER_LD "Check if a faster linker is availab
 CMAKE_DEPENDENT_OPTION(USE_SYSTEM_MOLTENVK "Use the system MoltenVK lib (instead of the bundled one)" OFF "APPLE" OFF)
 
 set(DEFAULT_ENABLE_OPENSSL ON)
-if (WIN32 OR APPLE)
+# Windows and macOS default to the system TLS backend, except when OpenSSL is being built anyway
+# for the web service: only the OpenSSL backend can trust a private server's CA (see
+# docs/switchnet.md), so it is what makes playing through SwitchNet work on every platform.
+if ((WIN32 OR APPLE) AND NOT ENABLE_WEB_SERVICE)
     set(DEFAULT_ENABLE_OPENSSL OFF)
 endif()
 option(ENABLE_OPENSSL "Enable OpenSSL backend for ISslConnection" ${DEFAULT_ENABLE_OPENSSL})
