@@ -10,6 +10,7 @@
 #include "common/swap.h"
 #include "core/core.h"
 #include "core/hle/service/ipc_helpers.h"
+#include "core/hle/service/sockets/private_server.h"
 #include "core/hle/service/sockets/sfdnsres.h"
 #include "core/hle/service/sockets/sockets.h"
 #include "core/hle/service/sockets/sockets_translate.h"
@@ -163,13 +164,18 @@ static std::pair<u32, GetAddrInfoError> GetHostByNameRequestImpl(HLERequestConte
     const std::string host = Common::StringFromBuffer(host_buffer);
     // For now, ignore options, which are in input buffer 1 for GetHostByNameRequestWithOptions.
 
-    // Prevent resolution of Nintendo servers
-    if (blocked_domains.find(host) != blocked_domains.end()) {
+    const std::optional<std::string> redirect = PrivateServerRedirect(host);
+    if (redirect) {
+        LOG_INFO(Network, "Redirecting {} to private server {}", host, *redirect);
+    } else if (blocked_domains.find(host) != blocked_domains.end()) {
+        // Prevent resolution of Nintendo servers
         LOG_WARNING(Network, "Resolution of hostname {} requested, returning EAI_AGAIN", host);
         return {0, GetAddrInfoError::AGAIN};
     }
 
-    auto res = Network::GetAddressInfo(host, /*service*/ std::nullopt);
+    // A redirect resolves the configured address itself, which is numeric and so never leaves
+    // the machine; the answer is still serialized under the name the guest asked for.
+    auto res = Network::GetAddressInfo(redirect.value_or(host), /*service*/ std::nullopt);
     if (!res.has_value()) {
         return {0, Translate(res.error())};
     }
@@ -280,8 +286,11 @@ static std::pair<u32, GetAddrInfoError> GetAddrInfoRequestImpl(HLERequestContext
     const auto host_buffer = ctx.ReadBuffer(0);
     const std::string host = Common::StringFromBuffer(host_buffer);
 
-    // Prevent resolution of Nintendo servers
-    if (blocked_domains.find(host) != blocked_domains.end()) {
+    const std::optional<std::string> redirect = PrivateServerRedirect(host);
+    if (redirect) {
+        LOG_INFO(Network, "Redirecting {} to private server {}", host, *redirect);
+    } else if (blocked_domains.find(host) != blocked_domains.end()) {
+        // Prevent resolution of Nintendo servers
         LOG_WARNING(Network, "Resolution of hostname {} requested, returning EAI_AGAIN", host);
         return {0, GetAddrInfoError::AGAIN};
     }
@@ -294,7 +303,7 @@ static std::pair<u32, GetAddrInfoError> GetAddrInfoRequestImpl(HLERequestContext
 
     // Serialized hints are also passed in a buffer, but are ignored for now.
 
-    auto res = Network::GetAddressInfo(host, service);
+    auto res = Network::GetAddressInfo(redirect.value_or(host), service);
     if (!res.has_value()) {
         return {0, Translate(res.error())};
     }
