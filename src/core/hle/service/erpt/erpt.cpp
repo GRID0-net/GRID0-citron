@@ -6,6 +6,7 @@
 #include "common/logging.h"
 #include "core/hle/service/cmif_serialization.h"
 #include "core/hle/service/erpt/erpt.h"
+#include "core/hle/service/ipc_helpers.h"
 #include "core/hle/service/server_manager.h"
 #include "core/hle/service/service.h"
 #include "core/hle/service/sm/sm.h"
@@ -19,21 +20,21 @@ public:
         static const FunctionInfo functions[] = {
             {0, C<&ErrorReportContext::SubmitContext>, "SubmitContext"},
             {1, C<&ErrorReportContext::CreateReportV0>, "CreateReportV0"},
-            {2, nullptr, "SetInitialLaunchSettingsCompletionTime"},
-            {3, nullptr, "ClearInitialLaunchSettingsCompletionTime"},
-            {4, nullptr, "UpdatePowerOnTime"},
-            {5, nullptr, "UpdateAwakeTime"},
-            {6, nullptr, "SubmitMultipleCategoryContext"},
-            {7, nullptr, "UpdateApplicationLaunchTime"},
-            {8, nullptr, "ClearApplicationLaunchTime"},
+            {2, &ErrorReportContext::RecordOnly, "SetInitialLaunchSettingsCompletionTime"},
+            {3, &ErrorReportContext::RecordOnly, "ClearInitialLaunchSettingsCompletionTime"},
+            {4, &ErrorReportContext::RecordOnly, "UpdatePowerOnTime"},
+            {5, &ErrorReportContext::RecordOnly, "UpdateAwakeTime"},
+            {6, &ErrorReportContext::RecordOnly, "SubmitMultipleCategoryContext"},
+            {7, &ErrorReportContext::RecordOnly, "UpdateApplicationLaunchTime"},
+            {8, &ErrorReportContext::RecordOnly, "ClearApplicationLaunchTime"},
             {9, nullptr, "SubmitAttachment"},
             {10, nullptr, "CreateReportWithAttachments"},
             {11, C<&ErrorReportContext::CreateReportV1>, "CreateReportV1"},
             {12, C<&ErrorReportContext::CreateReport>, "CreateReport"},
-            {20, nullptr, "RegisterRunningApplet"},
-            {21, nullptr, "UnregisterRunningApplet"},
-            {22, nullptr, "UpdateAppletSuspendedDuration"},
-            {30, nullptr, "InvalidateForcedShutdownDetection"},
+            {20, &ErrorReportContext::RecordOnly, "RegisterRunningApplet"},
+            {21, &ErrorReportContext::RecordOnly, "UnregisterRunningApplet"},
+            {22, &ErrorReportContext::RecordOnly, "UpdateAppletSuspendedDuration"},
+            {30, &ErrorReportContext::RecordOnly, "InvalidateForcedShutdownDetection"},
         };
         // clang-format on
 
@@ -41,6 +42,17 @@ public:
     }
 
 private:
+    // Bookkeeping the real service keeps only so it can be written into error reports: launch,
+    // power-on and awake times, running applets. Nothing reads it back here, so acknowledging is
+    // the whole implementation. Left unimplemented, the first one called is fatal -- the error
+    // applet calls UpdateAwakeTime while showing a game's error, so the game froze on its loading
+    // screen instead of showing the error it had hit.
+    void RecordOnly(HLERequestContext& ctx) {
+        LOG_DEBUG(Service_SET, "called");
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(ResultSuccess);
+    }
+
     Result SubmitContext(InBuffer<BufferAttr_HipcMapAlias> context_entry,
                          InBuffer<BufferAttr_HipcMapAlias> field_list) {
         LOG_WARNING(Service_SET, "(STUBBED) called, context_entry_size={}, field_list_size={}",
