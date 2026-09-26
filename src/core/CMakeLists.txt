@@ -1111,6 +1111,8 @@ add_library(core STATIC
     hle/service/sockets/bsd.h
     hle/service/sockets/bsdnu.cpp
     hle/service/sockets/bsdnu.h
+    hle/service/sockets/deferred_poll_waker.cpp
+    hle/service/sockets/deferred_poll_waker.h
     hle/service/sockets/dnspriv.cpp
     hle/service/sockets/dnspriv.h
     hle/service/sockets/ethc.cpp

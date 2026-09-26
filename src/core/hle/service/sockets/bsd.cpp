@@ -15,6 +15,7 @@
 #include "core/hle/kernel/k_thread.h"
 #include "core/hle/service/ipc_helpers.h"
 #include "core/hle/service/sockets/bsd.h"
+#include "core/hle/service/sockets/deferred_poll_waker.h"
 #include "core/hle/service/sockets/sockets_translate.h"
 #include "core/internal_network/network.h"
 #include "core/internal_network/socket_proxy.h"
@@ -338,6 +339,11 @@ void BSD::Poll(HLERequestContext& ctx) {
 
     LOG_DEBUG(Service, "called. nfds={} timeout={}", nfds, timeout);
 
+    if (deferred_poll_waker && PollIncludesEventFd(ctx.ReadBuffer(), nfds)) {
+        PollWithEventFd(ctx, nfds, timeout);
+        return;
+    }
+
     ExecuteWork(ctx, PollWork{
                          .nfds = nfds,
                          .timeout = timeout,
@@ -556,6 +562,34 @@ void BSD::Write(HLERequestContext& ctx) {
 
     LOG_DEBUG(Service, "called. fd={} len={}", fd, ctx.GetReadBufferSize());
 
+    if (const auto eventfd = GetEventFd(fd)) {
+        const auto buffer = ctx.ReadBuffer();
+        u64 add = 0;
+        Errno bsd_errno = Errno::SUCCESS;
+        if (buffer.size() < sizeof(u64)) {
+            bsd_errno = Errno::INVAL;
+        } else {
+            std::memcpy(&add, buffer.data(), sizeof(u64));
+            std::scoped_lock lock{eventfd->mutex};
+            if (add == ~u64{0}) {
+                bsd_errno = Errno::INVAL;
+            } else if (eventfd->value > ~u64{0} - 1 - add) {
+                // Always non-blocking: a blocking write would stall a service thread.
+                bsd_errno = Errno::AGAIN;
+            } else {
+                eventfd->value += add;
+            }
+        }
+        if (bsd_errno == Errno::SUCCESS && deferred_poll_waker) {
+            deferred_poll_waker->Wake();
+        }
+        IPC::ResponseBuilder rb{ctx, 4};
+        rb.Push(ResultSuccess);
+        rb.Push<s32>(bsd_errno == Errno::SUCCESS ? static_cast<s32>(sizeof(u64)) : -1);
+        rb.PushEnum(bsd_errno);
+        return;
+    }
+
     ExecuteWork(ctx, SendWork{
                          .fd = fd,
                          .flags = 0,
@@ -566,6 +600,33 @@ void BSD::Write(HLERequestContext& ctx) {
 void BSD::Read(HLERequestContext& ctx) {
     IPC::RequestParser rp{ctx};
     const s32 fd = rp.Pop<s32>();
+
+    if (const auto eventfd = GetEventFd(fd)) {
+        Errno bsd_errno = Errno::SUCCESS;
+        u64 out = 0;
+        if (ctx.GetWriteBufferSize() < sizeof(u64)) {
+            bsd_errno = Errno::INVAL;
+        } else {
+            std::scoped_lock lock{eventfd->mutex};
+            if (eventfd->value == 0) {
+                // Always non-blocking, for the same reason as Write.
+                bsd_errno = Errno::AGAIN;
+            } else if (eventfd->semaphore) {
+                out = 1;
+                --eventfd->value;
+            } else {
+                out = std::exchange(eventfd->value, 0);
+            }
+        }
+        if (bsd_errno == Errno::SUCCESS) {
+            ctx.WriteBuffer(&out, sizeof(out));
+        }
+        IPC::ResponseBuilder rb{ctx, 4};
+        rb.Push(ResultSuccess);
+        rb.Push<s32>(bsd_errno == Errno::SUCCESS ? static_cast<s32>(sizeof(u64)) : -1);
+        rb.PushEnum(bsd_errno);
+        return;
+    }
 
     LOG_WARNING(Service, "(STUBBED) called. fd={} len={}", fd, ctx.GetWriteBufferSize());
 
@@ -614,9 +675,25 @@ void BSD::EventFd(HLERequestContext& ctx) {
     const u64 initval = rp.Pop<u64>();
     const u32 flags = rp.Pop<u32>();
 
-    LOG_WARNING(Service, "(STUBBED) called. initval={}, flags={}", initval, flags);
+    LOG_DEBUG(Service, "called. initval={}, flags={}", initval, flags);
 
-    BuildErrnoResponse(ctx, Errno::SUCCESS);
+    s32 fd;
+    {
+        std::lock_guard lock(fd_table_mutex);
+        fd = FindFreeFileDescriptorHandle();
+        if (fd >= 0) {
+            auto state = std::make_shared<EventFdState>();
+            state->value = initval;
+            state->semaphore = (flags & 1) != 0; // EFD_SEMAPHORE
+            file_descriptors[fd] = FileDescriptor{};
+            file_descriptors[fd]->eventfd = std::move(state);
+        }
+    }
+
+    IPC::ResponseBuilder rb{ctx, 4};
+    rb.Push(ResultSuccess);
+    rb.Push<s32>(fd >= 0 ? fd : -1);
+    rb.PushEnum(fd >= 0 ? Errno::SUCCESS : Errno::MFILE);
 }
 
 void BSD::RegisterClientShared(HLERequestContext& ctx) {
@@ -879,6 +956,17 @@ Errno BSD::ListenImpl(s32 fd, s32 backlog) {
 std::pair<s32, Errno> BSD::FcntlImpl(s32 fd, FcntlCmd cmd, s32 arg) {
     if (!IsFileDescriptorValid(fd)) {
         return {-1, Errno::BADF};
+    }
+    if (file_descriptors[fd]->eventfd) {
+        // Reads and writes on an eventfd never block here, so O_NONBLOCK is only remembered.
+        if (cmd == FcntlCmd::GETFL) {
+            return {file_descriptors[fd]->flags, Errno::SUCCESS};
+        }
+        if (cmd == FcntlCmd::SETFL) {
+            file_descriptors[fd]->flags = arg;
+            return {0, Errno::SUCCESS};
+        }
+        return {-1, Errno::INVAL};
     }
     if (!file_descriptors[fd]->socket)
         return {-1, Errno::BADF};
@@ -1164,6 +1252,10 @@ Errno BSD::CloseImpl(s32 fd) {
 
     {
         std::lock_guard lock(fd_table_mutex);
+        if (file_descriptors[fd]->eventfd) {
+            file_descriptors[fd].reset();
+            return Errno::SUCCESS;
+        }
         if (!file_descriptors[fd]->socket)
             return Errno::BADF;
         socket_to_close = file_descriptors[fd]->socket;
@@ -1217,6 +1309,164 @@ bool BSD::IsFileDescriptorValid(s32 fd) const noexcept {
         return false;
     }
     return true;
+}
+
+void BSD::SetDeferredPollWaker(std::shared_ptr<DeferredPollWaker> waker) {
+    deferred_poll_waker = std::move(waker);
+}
+
+std::shared_ptr<BSD::EventFdState> BSD::GetEventFd(s32 fd) {
+    if (fd < 0 || fd >= static_cast<s32>(MAX_FD)) {
+        return nullptr;
+    }
+    std::lock_guard lock(fd_table_mutex);
+    return file_descriptors[fd] ? file_descriptors[fd]->eventfd : nullptr;
+}
+
+bool BSD::PollIncludesEventFd(std::span<const u8> read_buffer, s32 nfds) {
+    if (nfds <= 0 || read_buffer.size() < nfds * sizeof(PollFD)) {
+        return false;
+    }
+    for (s32 i = 0; i < nfds; ++i) {
+        PollFD pollfd;
+        std::memcpy(&pollfd, read_buffer.data() + i * sizeof(PollFD), sizeof(PollFD));
+        if (GetEventFd(pollfd.fd)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// One non-blocking pass over a pollfd set, following POSIX: a closed descriptor reports POLLNVAL
+// for its own entry instead of failing the whole call, and the count is of entries with any
+// revents set. gRPC depends on both.
+std::pair<s32, Errno> BSD::PollOnce(std::vector<u8>& write_buffer, std::span<const u8> read_buffer,
+                                    s32 nfds) {
+    std::vector<PollFD> fds(nfds);
+    std::memcpy(fds.data(), read_buffer.data(), nfds * sizeof(PollFD));
+
+    std::vector<Network::PollFD> host_pollfds;
+    std::vector<size_t> host_index;
+
+    for (size_t i = 0; i < fds.size(); ++i) {
+        PollFD& pollfd = fds[i];
+        pollfd.revents = PollEvents{};
+
+        if (pollfd.fd < 0) {
+            continue; // POSIX: a negative fd is skipped
+        }
+        if (pollfd.fd >= static_cast<s32>(MAX_FD) || !file_descriptors[pollfd.fd]) {
+            pollfd.revents = PollEvents::Nval;
+            continue;
+        }
+
+        const FileDescriptor& descriptor = *file_descriptors[pollfd.fd];
+        if (descriptor.eventfd) {
+            // gRPC polls its wakeup eventfd with no events requested while a connect is in
+            // flight, and expects the poll to return once the eventfd is written; so an empty
+            // request is read as a request for input.
+            const bool wants_input =
+                pollfd.events == PollEvents{} || True(pollfd.events & PollEvents::In);
+            std::scoped_lock lock{descriptor.eventfd->mutex};
+            if (wants_input && descriptor.eventfd->value > 0) {
+                pollfd.revents |= PollEvents::In;
+            }
+            if (True(pollfd.events & PollEvents::Out)) {
+                pollfd.revents |= PollEvents::Out;
+            }
+            continue;
+        }
+        if (!descriptor.socket) {
+            pollfd.revents = PollEvents::Nval;
+            continue;
+        }
+
+        Network::PollFD host;
+        host.socket = descriptor.socket.get();
+        host.events = Translate(pollfd.events);
+        host.revents = Network::PollEvents{};
+        host_pollfds.push_back(host);
+        host_index.push_back(i);
+    }
+
+    if (!host_pollfds.empty()) {
+        const auto [result, err] = Network::Poll(host_pollfds, 0);
+        if (result < 0) {
+            return {-1, Translate(err)};
+        }
+        for (size_t j = 0; j < host_pollfds.size(); ++j) {
+            fds[host_index[j]].revents = Translate(host_pollfds[j].revents);
+        }
+    }
+
+    s32 ready = 0;
+    for (const PollFD& pollfd : fds) {
+        if (pollfd.revents != PollEvents{}) {
+            ++ready;
+        }
+    }
+
+    std::memcpy(write_buffer.data(), fds.data(), nfds * sizeof(PollFD));
+    return {ready, Errno::SUCCESS};
+}
+
+// poll() for a set that includes an eventfd. It never blocks a service thread: when nothing is
+// ready yet the reply is deferred, and DeferredPollWaker has the server manager re-run this until
+// something is or the timeout passes. See DeferredPollWaker for why.
+void BSD::PollWithEventFd(HLERequestContext& ctx, s32 nfds, s32 timeout) {
+    const auto read_buffer = ctx.ReadBuffer();
+    std::vector<u8> write_buffer(ctx.GetWriteBufferSize());
+
+    s32 ret = -1;
+    Errno bsd_errno = Errno::INVAL;
+    if (read_buffer.size() >= nfds * sizeof(PollFD) &&
+        write_buffer.size() >= nfds * sizeof(PollFD) && timeout >= -1) {
+        std::tie(ret, bsd_errno) = PollOnce(write_buffer, read_buffer, nfds);
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    bool finished = true;
+    {
+        std::scoped_lock lock{deferred_polls_mutex};
+
+        // A deferred poll whose session went away is never re-run; do not keep waking for it.
+        for (auto it = deferred_polls.begin(); it != deferred_polls.end();) {
+            if (it->first != &ctx && now - it->second.last_run > std::chrono::seconds(5)) {
+                it = deferred_polls.erase(it);
+                deferred_poll_waker->RemoveWaiter();
+            } else {
+                ++it;
+            }
+        }
+
+        if (ret == 0 && bsd_errno == Errno::SUCCESS && timeout != 0) {
+            const auto deadline = timeout < 0 ? std::chrono::steady_clock::time_point::max()
+                                              : now + std::chrono::milliseconds(timeout);
+            auto [it, inserted] = deferred_polls.try_emplace(&ctx, DeferredPoll{deadline, now});
+            if (inserted) {
+                deferred_poll_waker->AddWaiter();
+            }
+            it->second.last_run = now;
+            finished = now >= it->second.deadline;
+        }
+
+        if (finished && deferred_polls.erase(&ctx) != 0) {
+            deferred_poll_waker->RemoveWaiter();
+        }
+    }
+
+    if (!finished) {
+        ctx.SetIsDeferred();
+        return;
+    }
+
+    if (ret >= 0 && !write_buffer.empty()) {
+        ctx.WriteBuffer(write_buffer);
+    }
+    IPC::ResponseBuilder rb{ctx, 4};
+    rb.Push(ResultSuccess);
+    rb.Push<s32>(ret);
+    rb.PushEnum(bsd_errno);
 }
 
 void BSD::BuildErrnoResponse(HLERequestContext& ctx, Errno bsd_errno) const noexcept {

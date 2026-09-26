@@ -4,10 +4,12 @@
 
 #pragma once
 
+#include <chrono>
+#include <map>
 #include <memory>
+#include <mutex>
 #include <span>
 #include <vector>
-#include <map>
 
 #include "common/common_types.h"
 #include "common/expected.h"
@@ -27,6 +29,8 @@ class Socket;
 
 namespace Service::Sockets {
 
+class DeferredPollWaker;
+
 class BSD final : public ServiceFramework<BSD> {
 public:
     explicit BSD(Core::System& system_, const char* name);
@@ -39,12 +43,24 @@ public:
     Errno CloseImpl(s32 fd);
     std::optional<std::shared_ptr<Network::SocketBase>> GetSocket(s32 fd);
 
+    /// Lets polls that include an eventfd defer their reply; see DeferredPollWaker.
+    void SetDeferredPollWaker(std::shared_ptr<DeferredPollWaker> waker);
+
 private:
     /// Maximum number of file descriptors
     static constexpr size_t MAX_FD = 128;
 
+    /// An eventfd: a counter guest threads use to wake each other, not a host socket. gRPC's
+    /// event loop polls one alongside its sockets.
+    struct EventFdState {
+        std::mutex mutex;
+        u64 value = 0;
+        bool semaphore = false;
+    };
+
     struct FileDescriptor {
         std::shared_ptr<Network::SocketBase> socket;
+        std::shared_ptr<EventFdState> eventfd;
         s32 flags = 0;
         bool is_connection_based = false;
         Network::Domain domain = Network::Domain::INET;
@@ -202,6 +218,20 @@ private:
     bool IsFileDescriptorValid(s32 fd) const noexcept;
 
     void BuildErrnoResponse(HLERequestContext& ctx, Errno bsd_errno) const noexcept;
+
+    bool PollIncludesEventFd(std::span<const u8> read_buffer, s32 nfds);
+    std::pair<s32, Errno> PollOnce(std::vector<u8>& write_buffer, std::span<const u8> read_buffer,
+                                   s32 nfds);
+    void PollWithEventFd(HLERequestContext& ctx, s32 nfds, s32 timeout);
+    std::shared_ptr<EventFdState> GetEventFd(s32 fd);
+
+    struct DeferredPoll {
+        std::chrono::steady_clock::time_point deadline;
+        std::chrono::steady_clock::time_point last_run;
+    };
+    std::shared_ptr<DeferredPollWaker> deferred_poll_waker;
+    std::mutex deferred_polls_mutex;
+    std::map<const HLERequestContext*, DeferredPoll> deferred_polls;
 
     std::array<std::optional<FileDescriptor>, MAX_FD> file_descriptors;
     std::mutex fd_table_mutex; // Protects access to the file_descriptors array
