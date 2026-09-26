@@ -1028,13 +1028,27 @@ public:
         : ServiceFramework{system_, "ssl:s"}, cert_store{system} {
         // clang-format off
         static const FunctionInfo functions[] = {
-            {0, &ISslServiceForSystem::CreateContextForSystem, "CreateContextForSystem"},
-            {1, &ISslServiceForSystem::SetThreadCoreMask, "SetThreadCoreMask"},
-            {2, &ISslServiceForSystem::GetThreadCoreMask, "GetThreadCoreMask"},
-            {3, &ISslServiceForSystem::VerifySignature, "VerifySignature"},
-            {4, nullptr, "SetCertificateAndPrivateKeyInternal"},
-            {5, &ISslServiceForSystem::FlushSessionCache, "FlushSessionCache"},
-            {100, &ISslServiceForSystem::SetInterfaceVersion, "SetInterfaceVersion"},
+            // ssl:s is ssl plus system commands from 100 up; 0-9 mean the same on both.
+            // Splatoon 3's NPLN stack opens SSL through ssl:s and asks for the CA
+            // certificates (3, then 2) right after resolving its first gRPC host.
+            // With the system commands at 0-3, those calls reached VerifySignature and
+            // GetThreadCoreMask stubs, got no certificates back, and the game never
+            // opened a socket. Found by citron-nextendo (GPL-3.0-or-later).
+            {0, &ISslServiceForSystem::CreateContext, "CreateContext"},
+            {1, &ISslServiceForSystem::GetContextCount, "GetContextCount"},
+            {2, D<&ISslServiceForSystem::GetCertificates>, "GetCertificates"},
+            {3, D<&ISslServiceForSystem::GetCertificateBufSize>, "GetCertificateBufSize"},
+            {4, nullptr, "DebugIoctl"},
+            {5, &ISslServiceForSystem::SetInterfaceVersion, "SetInterfaceVersion"},
+            {6, &ISslServiceForSystem::FlushSessionCache, "FlushSessionCache"},
+            {7, &ISslServiceForSystem::SetDebugOption, "SetDebugOption"},
+            {8, &ISslServiceForSystem::GetDebugOption, "GetDebugOption"},
+            {9, &ISslServiceForSystem::ClearTls12FallbackFlag, "ClearTls12FallbackFlag"},
+            {100, &ISslServiceForSystem::CreateContextForSystem, "CreateContextForSystem"},
+            {101, &ISslServiceForSystem::SetThreadCoreMask, "SetThreadCoreMask"},
+            {102, &ISslServiceForSystem::GetThreadCoreMask, "GetThreadCoreMask"},
+            {103, &ISslServiceForSystem::VerifySignature, "VerifySignature"},
+            {104, nullptr, "SetCertificateAndPrivateKeyInternal"},
         };
         // clang-format on
 
@@ -1042,6 +1056,76 @@ public:
     }
 
 private:
+    void CreateContext(HLERequestContext& ctx) {
+        struct Parameters {
+            SslVersion ssl_version;
+            INSERT_PADDING_BYTES(0x4);
+            u64 pid_placeholder;
+        };
+        static_assert(sizeof(Parameters) == 0x10, "Parameters is an invalid size");
+
+        IPC::RequestParser rp{ctx};
+        const auto parameters = rp.PopRaw<Parameters>();
+
+        LOG_WARNING(Service_SSL, "(STUBBED) called, api_version={}, pid_placeholder={}",
+                    parameters.ssl_version.api_version, parameters.pid_placeholder);
+
+        IPC::ResponseBuilder rb{ctx, 2, 0, 1};
+        rb.Push(ResultSuccess);
+        rb.PushIpcInterface<ISslContext>(system, parameters.ssl_version);
+    }
+
+    void GetContextCount(HLERequestContext& ctx) {
+        LOG_WARNING(Service_SSL, "(STUBBED) called");
+
+        IPC::ResponseBuilder rb{ctx, 3};
+        rb.Push(ResultSuccess);
+        rb.Push<u32>(0);
+    }
+
+    Result GetCertificateBufSize(
+        Out<u32> out_size, InArray<CaCertificateId, BufferAttr_HipcMapAlias> certificate_ids) {
+        LOG_INFO(Service_SSL, "called");
+        u32 num_entries;
+        R_RETURN(cert_store.GetCertificateBufSize(out_size, &num_entries, certificate_ids));
+    }
+
+    Result GetCertificates(Out<u32> out_num_entries, OutBuffer<BufferAttr_HipcMapAlias> out_buffer,
+                           InArray<CaCertificateId, BufferAttr_HipcMapAlias> certificate_ids) {
+        LOG_INFO(Service_SSL, "called");
+        R_RETURN(cert_store.GetCertificates(out_num_entries, out_buffer, certificate_ids));
+    }
+
+    void SetDebugOption(HLERequestContext& ctx) {
+        IPC::RequestParser rp{ctx};
+        const u32 debug_option_type = rp.Pop<u32>();
+
+        LOG_WARNING(Service_SSL, "(STUBBED) called, debug_option_type={}", debug_option_type);
+
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(ResultSuccess);
+    }
+
+    void GetDebugOption(HLERequestContext& ctx) {
+        IPC::RequestParser rp{ctx};
+        const u32 debug_option_type = rp.Pop<u32>();
+
+        LOG_WARNING(Service_SSL, "(STUBBED) called, debug_option_type={}", debug_option_type);
+
+        std::array<u8, 1> debug_value{0};
+        ctx.WriteBuffer(debug_value);
+
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(ResultSuccess);
+    }
+
+    void ClearTls12FallbackFlag(HLERequestContext& ctx) {
+        LOG_WARNING(Service_SSL, "(STUBBED) called");
+
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(ResultSuccess);
+    }
+
     void CreateContextForSystem(HLERequestContext& ctx) {
         struct Parameters {
             SslVersion ssl_version;
