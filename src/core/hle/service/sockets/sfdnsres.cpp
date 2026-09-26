@@ -241,8 +241,11 @@ static std::vector<u8> SerializeAddrInfo(const std::vector<Network::AddrInfo>& v
         Append<u32_be>(data, sizeof(SockAddrIn));                                // ai_addrlen
         // ^ *not* sizeof(SerializedSockAddrIn), not that it matters since they're the same size
 
-        // ai_addr:
-        Append<u16_be>(data, static_cast<u16>(Translate(addrinfo.addr.family))); // sin_family
+        // ai_addr: a BSD sockaddr_in, which starts with its own length. The game's resolver
+        // copies sin_len bytes of it: 0 here made every address empty, so a gRPC client (Splatoon
+        // 3's online client) discarded them all and never opened a socket.
+        data.push_back(static_cast<u8>(sizeof(SockAddrIn)));                  // sin_len
+        data.push_back(static_cast<u8>(Translate(addrinfo.addr.family)));    // sin_family
         // On the Switch, the following fields are passed through htonl despite
         // already being big-endian, so they end up as little-endian.
         Append<u16_le>(data, addrinfo.addr.portno);                            // sin_port
