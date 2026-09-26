@@ -1,0 +1,132 @@
+# Builds citron for Linux, Windows and macOS and publishes a GitHub release.
+#
+# Run it from the Actions tab with a version (for example 1.0.0), which creates the v<version>
+# tag, or push a v* tag yourself. Linux and Windows use the repository's own build scripts
+# without PGO, which needs a profiling session no CI runner can do; macOS has no build script
+# upstream and is built with CMake directly.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release, as major.minor.patch (for example 1.0.0). A v<version> tag is created if it does not exist yet.'
+        required: true
+      publish:
+        description: 'Publish the release. Turn off to only build and keep the artifacts.'
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+env:
+  VERSION: ${{ inputs.version || github.ref_name }}
+
+jobs:
+  linux:
+    name: Linux (AppImage)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Free disk space
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+      - name: Install the toolchain and dependencies
+        run: ./build-citron-linux.sh setup
+      - name: Build
+        run: ./build-citron-linux.sh use --pgo none --lto thin --jobs "$(nproc)"
+      - name: Collect
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          find build/use-nopgo -name '*.AppImage' -exec cp {} "out/citron-${VERSION#v}-linux-x86_64.AppImage" \; -quit
+          ls -la out
+          test -n "$(ls out)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: out/*
+
+  windows:
+    name: Windows (cross-compiled)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Free disk space
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+      - name: Install the toolchain and dependencies
+        run: ./build-clangtron-windows.sh setup
+      - name: Build
+        run: ./build-clangtron-windows.sh use --pgo-type none --lto thin --jobs "$(nproc)"
+      - name: Collect
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          bin=$(dirname "$(find build -path '*use-nopgo*' -name citron.exe | head -n1)")
+          test -f "$bin/citron.exe"
+          (cd "$bin" && zip -qr "$GITHUB_WORKSPACE/out/citron-${VERSION#v}-windows-x86_64.zip" .)
+          ls -la out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: out/*
+
+  macos:
+    name: macOS (Apple silicon)
+    runs-on: macos-14
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          brew install ninja nasm glslang molten-vk vulkan-headers vulkan-loader qt@6 \
+            boost fmt lz4 nlohmann-json zstd sdl2 ffmpeg openssl@3 opus enet catch2
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCITRON_USE_CPM=ON -DCPM_USE_LOCAL_PACKAGES=ON \
+            -DCMAKE_PREFIX_PATH="$(brew --prefix qt@6);$(brew --prefix openssl@3)" \
+            -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)" \
+            -DCITRON_TESTS=OFF -DCITRON_USE_PRECOMPILED_HEADERS=OFF -DENABLE_OPENSSL=ON
+      - name: Build
+        run: cmake --build build --parallel
+      - name: Collect
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          app=$(find build -name 'citron.app' -maxdepth 4 | head -n1)
+          test -n "$app"
+          "$(brew --prefix qt@6)/bin/macdeployqt" "$app" || true
+          ditto -c -k --keepParent "$app" "out/citron-${VERSION#v}-macos-arm64.zip"
+          ls -la out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: out/*
+
+  publish:
+    name: Publish the release
+    needs: [linux, windows, macos]
+    if: ${{ !cancelled() && inputs.publish != false && needs.linux.result == 'success' && needs.windows.result == 'success' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist-out
+          merge-multiple: true
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="v${VERSION#v}"
+          if ! git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+            git tag "$tag" "$GITHUB_SHA"
+            git push origin "$tag"
+          fi
+          gh release create "$tag" dist-out/* --title "citron $tag" \
+            --notes "Built from $(git rev-parse --short HEAD). SwitchNet support: see docs/switchnet.md." \
+            || gh release upload "$tag" dist-out/* --clobber
