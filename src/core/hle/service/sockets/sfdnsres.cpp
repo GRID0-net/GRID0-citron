@@ -321,6 +321,16 @@ static std::pair<u32, GetAddrInfoError> GetAddrInfoRequestImpl(HLERequestContext
         return {0, Translate(res.error())};
     }
 
+    // The host resolver never asks for a canonical name, and for a redirect the name it resolved
+    // is the numeric address anyway. Answer with the name the guest asked for, as a real
+    // resolver would: citron-nextendo reports that Splatoon 3's gRPC stack closes its NPLN
+    // connections before sending a request when this field is empty.
+    if (redirect) {
+        for (auto& addrinfo : res.value()) {
+            addrinfo.canon_name = host;
+        }
+    }
+
     const std::vector<u8> data = SerializeAddrInfo(res.value(), host);
     const u32 data_size = static_cast<u32>(data.size());
     ctx.WriteBuffer(data, 0);
