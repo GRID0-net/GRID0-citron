@@ -714,6 +714,17 @@ void BSD::ExecuteWork(HLERequestContext& ctx, Work work) {
 }
 
 std::pair<s32, Errno> BSD::SocketImpl(Domain domain, Type type, Protocol protocol) {
+    // Every address this service handles is IPv4 (SockAddrIn), so an IPv6 socket could be created
+    // but never bound or connected. Refusing it is the truthful answer, and the one gRPC plans
+    // for: its probe_ipv6_once disables AF_INET6 when socket() fails, and it then connects to an
+    // IPv4 address -- even one it holds as ::ffff:a.b.c.d -- over an AF_INET socket with a plain
+    // sockaddr_in. Splatoon 3's online client otherwise connects with a 28-byte v4-mapped address
+    // (NextendoNetwork's capture, facts only), which nothing here can read.
+    if (domain == Domain::INET6) {
+        LOG_WARNING(Service, "Refusing an IPv6 socket: only IPv4 is emulated");
+        return {-1, Errno::AFNOSUPPORT};
+    }
+
     if (type == Type::SEQPACKET) {
         UNIMPLEMENTED_MSG("SOCK_SEQPACKET errno management");
     } else if (type == Type::RAW && (domain != Domain::INET || protocol != Protocol::ICMP)) {
@@ -870,7 +881,14 @@ Errno BSD::BindImpl(s32 fd, std::span<const u8> addr) {
     if (!file_descriptors[fd]->socket)
         return Errno::BADF;
 
-    ASSERT(addr.size() == sizeof(SockAddrIn));
+    if (addr.size() != sizeof(SockAddrIn)) {
+        // Anything but a sockaddr_in cannot be read as one; guessing at it binds somewhere the
+        // guest never asked for.
+        LOG_WARNING(Service, "Bind fd={} refused: {}-byte address, only sockaddr_in is emulated",
+                    fd, addr.size());
+        return addr.size() >= 2 && addr[1] == static_cast<u8>(Domain::INET6) ? Errno::AFNOSUPPORT
+                                                                              : Errno::INVAL;
+    }
     auto addr_in = GetValue<SockAddrIn>(addr);
 
     LOG_INFO(Service, "Bind fd={} to {}:{}", fd, Network::IPv4AddressToString(addr_in.ip),
@@ -894,7 +912,14 @@ Errno BSD::ConnectImpl(s32 fd, std::span<const u8> addr) {
         return Errno::CONNREFUSED;
     }
 
-    UNIMPLEMENTED_IF(addr.size() != sizeof(SockAddrIn));
+    if (addr.size() != sizeof(SockAddrIn)) {
+        // Read as a sockaddr_in, a sockaddr_in6's flow info became the address: a connect to
+        // 0.0.0.0 that looks like the server refusing the game.
+        LOG_WARNING(Service, "Connect fd={} refused: {}-byte address, only sockaddr_in is emulated",
+                    fd, addr.size());
+        return addr.size() >= 2 && addr[1] == static_cast<u8>(Domain::INET6) ? Errno::AFNOSUPPORT
+                                                                              : Errno::INVAL;
+    }
     auto addr_in = GetValue<SockAddrIn>(addr);
 
     LOG_INFO(Service, "Connect fd={} to {}:{}", fd, Network::IPv4AddressToString(addr_in.ip),
