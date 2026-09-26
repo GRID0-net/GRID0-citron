@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: Copyright 2025 Citron Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <QLineEdit>
 #include <QMessageBox>
 #include <QtConcurrent/QtConcurrent>
 #include "common/settings.h"
@@ -34,6 +35,16 @@ void ConfigureNetwork::ApplyConfiguration() {
     Settings::values.airplane_mode = ui->airplane_mode->isChecked();
     Settings::values.network_interface = ui->network_interface->currentText().toStdString();
     Settings::values.lobby_api_url = ui->lobby_api_url->text().toStdString();
+
+    const auto text = [](const QLineEdit* edit) { return edit->text().trimmed().toStdString(); };
+    Settings::values.private_server_address = text(ui->private_server_address);
+    Settings::values.private_server_nat_secondary_address =
+        text(ui->private_server_nat_secondary_address);
+    Settings::values.private_server_ca_bundle = text(ui->private_server_ca_bundle);
+    Settings::values.switchnet_server = text(ui->switchnet_server);
+    Settings::values.switchnet_username = text(ui->switchnet_username);
+    // Not trimmed: a password may legitimately begin or end with a space.
+    Settings::values.switchnet_password = ui->switchnet_password->text().toStdString();
 }
 
 void ConfigureNetwork::changeEvent(QEvent* event) {
@@ -57,6 +68,17 @@ void ConfigureNetwork::SetConfiguration() {
     ui->network_interface->setCurrentText(QString::fromStdString(network_interface));
 
     ui->lobby_api_url->setText(QString::fromStdString(Settings::values.lobby_api_url.GetValue()));
+
+    const auto set = [](QLineEdit* edit, const Settings::Setting<std::string>& setting) {
+        edit->setText(QString::fromStdString(setting.GetValue()));
+    };
+    set(ui->private_server_address, Settings::values.private_server_address);
+    set(ui->private_server_nat_secondary_address,
+        Settings::values.private_server_nat_secondary_address);
+    set(ui->private_server_ca_bundle, Settings::values.private_server_ca_bundle);
+    set(ui->switchnet_server, Settings::values.switchnet_server);
+    set(ui->switchnet_username, Settings::values.switchnet_username);
+    set(ui->switchnet_password, Settings::values.switchnet_password);
 
     const bool networking_enabled = runtime_lock && !ui->airplane_mode->isChecked();
     ui->network_interface->setEnabled(networking_enabled);
