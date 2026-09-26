@@ -339,7 +339,10 @@ void BSD::Poll(HLERequestContext& ctx) {
 
     LOG_DEBUG(Service, "called. nfds={} timeout={}", nfds, timeout);
 
-    if (deferred_poll_waker && PollIncludesEventFd(ctx.ReadBuffer(), nfds)) {
+    // A re-run of a deferred poll goes straight back to it: the guest's buffer may no longer hold
+    // this poll's descriptors (see PollWithEventFd), so it cannot be looked at again to decide.
+    if (deferred_poll_waker &&
+        (IsDeferredPoll(ctx) || PollIncludesEventFd(ctx.ReadBuffer(), nfds))) {
         PollWithEventFd(ctx, nfds, timeout);
         return;
     }
@@ -1323,6 +1326,11 @@ std::shared_ptr<BSD::EventFdState> BSD::GetEventFd(s32 fd) {
     return file_descriptors[fd] ? file_descriptors[fd]->eventfd : nullptr;
 }
 
+bool BSD::IsDeferredPoll(const HLERequestContext& ctx) {
+    std::scoped_lock lock{deferred_polls_mutex};
+    return deferred_polls.contains(&ctx);
+}
+
 bool BSD::PollIncludesEventFd(std::span<const u8> read_buffer, s32 nfds) {
     if (nfds <= 0 || read_buffer.size() < nfds * sizeof(PollFD)) {
         return false;
@@ -1370,6 +1378,16 @@ std::pair<s32, Errno> BSD::PollOnce(std::vector<u8>& write_buffer, std::span<con
             std::scoped_lock lock{descriptor.eventfd->mutex};
             if (wants_input && descriptor.eventfd->value > 0) {
                 pollfd.revents |= PollEvents::In;
+                // Consumed as it is reported. gRPC writes its wakeup eventfd but never reads it
+                // back, so left set it would stay readable for good: every poll would return at
+                // once on the wakeup and the event loop would never get to the socket it is
+                // waiting on. NextendoNetwork found exactly that on the same game (facts only).
+                // A guest that does read it gets EAGAIN, which gRPC's wakeup consumer accepts.
+                if (descriptor.eventfd->semaphore) {
+                    --descriptor.eventfd->value;
+                } else {
+                    descriptor.eventfd->value = 0;
+                }
             }
             if (True(pollfd.events & PollEvents::Out)) {
                 pollfd.revents |= PollEvents::Out;
@@ -1414,14 +1432,34 @@ std::pair<s32, Errno> BSD::PollOnce(std::vector<u8>& write_buffer, std::span<con
 // ready yet the reply is deferred, and DeferredPollWaker has the server manager re-run this until
 // something is or the timeout passes. See DeferredPollWaker for why.
 void BSD::PollWithEventFd(HLERequestContext& ctx, s32 nfds, s32 timeout) {
-    const auto read_buffer = ctx.ReadBuffer();
+    const size_t pollfds_size = nfds > 0 ? static_cast<size_t>(nfds) * sizeof(PollFD) : 0;
+
+    // The descriptors are read from the guest once, when the request first arrives, and every
+    // re-run checks that copy. The guest's buffer is only certain to hold them while the request
+    // is being received: the game's socket library reuses it for its next bsd call, and a re-run
+    // that read it again took that call's data (a connect's address, an eventfd write) for
+    // descriptors -- EBADF or POLLNVAL on a poll the guest never made, and gRPC's event loop
+    // stopped for good. NextendoNetwork found this on the same game (facts only).
+    std::vector<u8> pollfds;
+    {
+        std::scoped_lock lock{deferred_polls_mutex};
+        const auto it = deferred_polls.find(&ctx);
+        // The size check stops a destroyed session's leftover entry, whose context address has
+        // since been reused, from standing in for a new request's descriptors.
+        if (it != deferred_polls.end() && it->second.pollfds.size() == pollfds_size) {
+            pollfds = it->second.pollfds;
+        }
+    }
+    if (pollfds.empty()) {
+        const auto read_buffer = ctx.ReadBuffer();
+        pollfds.assign(read_buffer.begin(), read_buffer.end());
+    }
     std::vector<u8> write_buffer(ctx.GetWriteBufferSize());
 
     s32 ret = -1;
     Errno bsd_errno = Errno::INVAL;
-    if (read_buffer.size() >= nfds * sizeof(PollFD) &&
-        write_buffer.size() >= nfds * sizeof(PollFD) && timeout >= -1) {
-        std::tie(ret, bsd_errno) = PollOnce(write_buffer, read_buffer, nfds);
+    if (pollfds.size() >= pollfds_size && write_buffer.size() >= pollfds_size && timeout >= -1) {
+        std::tie(ret, bsd_errno) = PollOnce(write_buffer, pollfds, nfds);
     }
 
     const auto now = std::chrono::steady_clock::now();
@@ -1444,6 +1482,7 @@ void BSD::PollWithEventFd(HLERequestContext& ctx, s32 nfds, s32 timeout) {
                                               : now + std::chrono::milliseconds(timeout);
             auto [it, inserted] = deferred_polls.try_emplace(&ctx, DeferredPoll{deadline, now});
             if (inserted) {
+                it->second.pollfds = pollfds;
                 deferred_poll_waker->AddWaiter();
             }
             it->second.last_run = now;

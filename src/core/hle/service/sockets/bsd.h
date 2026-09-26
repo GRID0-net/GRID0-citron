@@ -220,6 +220,8 @@ private:
     void BuildErrnoResponse(HLERequestContext& ctx, Errno bsd_errno) const noexcept;
 
     bool PollIncludesEventFd(std::span<const u8> read_buffer, s32 nfds);
+    /// Whether this request is a deferred poll being re-run.
+    bool IsDeferredPoll(const HLERequestContext& ctx);
     std::pair<s32, Errno> PollOnce(std::vector<u8>& write_buffer, std::span<const u8> read_buffer,
                                    s32 nfds);
     void PollWithEventFd(HLERequestContext& ctx, s32 nfds, s32 timeout);
@@ -228,6 +230,8 @@ private:
     struct DeferredPoll {
         std::chrono::steady_clock::time_point deadline;
         std::chrono::steady_clock::time_point last_run;
+        /// The pollfd array as the guest sent it; see PollWithEventFd.
+        std::vector<u8> pollfds;
     };
     std::shared_ptr<DeferredPollWaker> deferred_poll_waker;
     std::mutex deferred_polls_mutex;
