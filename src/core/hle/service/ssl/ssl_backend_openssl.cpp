@@ -6,14 +6,17 @@
 
 #include <openssl/bio.h>
 #include <openssl/err.h>
+#include <openssl/pem.h>
 #include <openssl/ssl.h>
 #include <openssl/x509.h>
 
 #include "common/fs/file.h"
 #include "common/hex_util.h"
+#include "common/settings.h"
 #include "common/string_util.h"
 
 #include "core/hle/service/ssl/ssl_backend.h"
+#include "core/hle/service/ssl/switchnet_ca.h"
 #include "core/internal_network/network.h"
 #include "core/internal_network/sockets.h"
 
@@ -37,6 +40,7 @@ BIO_METHOD* bio_meth;
 Result CheckOpenSSLErrors();
 void OneTimeInit();
 void OneTimeInitLogFile();
+void AddPrivateServerTrust();
 bool OneTimeInitBIO();
 
 } // namespace
@@ -336,6 +340,8 @@ void OneTimeInit() {
         return;
     }
 
+    AddPrivateServerTrust();
+
     OneTimeInitLogFile();
 
     if (!OneTimeInitBIO()) {
@@ -343,6 +349,46 @@ void OneTimeInit() {
     }
 
     one_time_init_success = true;
+}
+
+// Adds the CA of a private replacement for Nintendo's servers to what the guest trusts. This adds
+// one issuer; it does not relax any check. The hostname is still verified (SSL_set1_host), so a
+// certificate from that CA for the wrong name is still refused, and nothing chaining to any other
+// root is accepted because of it. Read once, like the rest of the context: changing the setting
+// needs a restart.
+void AddPrivateServerTrust() {
+    const std::string& bundle = Settings::values.private_server_ca_bundle.GetValue();
+    if (!bundle.empty()) {
+        if (SSL_CTX_load_verify_locations(ssl_ctx, bundle.c_str(), nullptr) != 1) {
+            LOG_ERROR(Service_SSL, "Could not load the private server CA bundle {}", bundle);
+            CheckOpenSSLErrors();
+            return;
+        }
+        LOG_INFO(Service_SSL, "Trusting the private server CA bundle {}", bundle);
+        return;
+    }
+
+    if (Settings::values.private_server_address.GetValue().empty()) {
+        return;
+    }
+
+    BIO* pem =
+        BIO_new_mem_buf(SwitchNetLocalCaPem.data(), static_cast<int>(SwitchNetLocalCaPem.size()));
+    if (!pem) {
+        CheckOpenSSLErrors();
+        return;
+    }
+    X509_STORE* store = SSL_CTX_get_cert_store(ssl_ctx);
+    int added = 0;
+    while (X509* cert = PEM_read_bio_X509(pem, nullptr, nullptr, nullptr)) {
+        if (X509_STORE_add_cert(store, cert) == 1) {
+            ++added;
+        }
+        X509_free(cert);
+    }
+    ERR_clear_error(); // PEM_read_bio_X509 ends the loop with an expected "no start line" error.
+    BIO_free(pem);
+    LOG_INFO(Service_SSL, "Trusting the built-in SwitchNet Local CA ({} certificate(s))", added);
 }
 
 void OneTimeInitLogFile() {

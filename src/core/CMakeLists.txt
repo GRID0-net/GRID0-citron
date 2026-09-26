@@ -1141,6 +1141,7 @@ add_library(core STATIC
     hle/service/ssl/ssl.h
     hle/service/ssl/ssl_backend.h
     hle/service/ssl/ssl_types.h
+    hle/service/ssl/switchnet_ca.h
     hle/service/tma/file_io.cpp
     hle/service/tma/file_io.h
     hle/service/tma/htc.cpp
