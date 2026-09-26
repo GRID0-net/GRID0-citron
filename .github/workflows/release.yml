@@ -33,10 +33,16 @@ jobs:
       - uses: actions/checkout@v4
       - name: Free disk space
         run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
-      - name: Install the toolchain and dependencies
-        run: ./build-citron-linux.sh setup
-      - name: Build
-        run: ./build-citron-linux.sh use --pgo none --lto thin --jobs "$(nproc)"
+      # The script builds inside its own Arch Linux container, and each invocation of it starts a
+      # fresh one: setup and build have to run in the same container, or the build finds none of
+      # the tools setup installed.
+      - name: Install the toolchain and build
+        run: |
+          docker run --rm --init -e CITRON_IN_ARCH_CONTAINER=1 \
+            -v "$PWD:/workspace" -w /workspace \
+            ghcr.io/pkgforge-dev/archlinux@sha256:f6fc7e14b0612a355d7ab50efb3cc40010ba28e4766860bd238d313b308f190b \
+            bash -c './build-citron-linux.sh setup --inside-arch-container && ./build-citron-linux.sh use --inside-arch-container --pgo none --lto thin --jobs "$(nproc)"'
+          sudo chown -R "$(id -u):$(id -g)" build
       - name: Collect
         run: |
           set -euo pipefail
@@ -75,7 +81,7 @@ jobs:
 
   macos:
     name: macOS (Apple silicon)
-    runs-on: macos-14
+    runs-on: macos-15
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
