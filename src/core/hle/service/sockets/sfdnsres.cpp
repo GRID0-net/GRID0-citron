@@ -29,24 +29,26 @@ enum class NetDbError : s32 {
 };
 
 SFDNSRES::SFDNSRES(Core::System& system_) : ServiceFramework{system_, "sfdnsres"} {
+    // Command ids as Switchbrew and Ryujinx number them. This table had been renumbered, which sent
+    // GetHostByName to GetAddrInfo (and GetAddrInfo to GetGaiStringError): a game then parses a
+    // reply of the wrong shape, finds no usable address and never connects.
     static const FunctionInfo functions[] = {
-        // Switchbrew Cmd ID order
-        {0, &SFDNSRES::SetDnsAddresses, "SetDnsAddresses"},                          // Was SetDnsAddressesPrivateRequest (nullptr)
-        {1, &SFDNSRES::GetDnsAddressList, "GetDnsAddressList"},                      // Was GetDnsAddressPrivateRequest (nullptr)
-        {2, &SFDNSRES::GetAddrInfoRequest, "GetAddrInfoRequest"},                   // Existing, was Cmd 6 in code
-        {3, &SFDNSRES::GetHostByNameRequest, "GetHostByNameRequest"},               // Existing, was Cmd 2 in code
-        {4, &SFDNSRES::GetHostByAddrRequest, "GetHostByAddrRequest"},               // Was GetHostByAddrRequest (nullptr)
-        {5, &SFDNSRES::GetHostStringError, "GetHostStringError"},                   // Was GetHostStringErrorRequest (nullptr)
-        {6, &SFDNSRES::GetGaiStringErrorRequest, "GetGaiStringErrorRequest"},       // Existing (GetGaiStringError), was Cmd 5 in code
-        {7, &SFDNSRES::CancelRequest, "CancelRequest"},                             // Was CancelRequest (Cmd 9, nullptr)
-        {8, &SFDNSRES::ResolverSetOptionRequest, "SetOptions"},                     // Existing (ResolverSetOptionRequest for SetOptions), was Cmd 14
-        {9, &SFDNSRES::GetOptions, "GetOptions"},                                   // Was ResolverGetOptionRequest (Cmd 15, nullptr)
-        {10, &SFDNSRES::GetHostByNameRequestWithOptions, "RequestAddrInfo"},         // Existing (GetHostByNameRequestWithOptions for RequestAddrInfo), was Cmd 10
-        {11, &SFDNSRES::GetAddrInfoRequestRaw, "GetAddrInfoRequestRaw"},            // New
-        {12, &SFDNSRES::GetAddrInfoRequestWithOptions, "GetAddrInfo"},             // Existing (GetAddrInfoRequestWithOptions for GetAddrInfo), was Cmd 12
-        {100, &SFDNSRES::GetNameInfoRequest, "GetNameInfoRequest_DEPRECATED_ID"}, // Placeholder ID
-        {101, &SFDNSRES::GetNameInfoRequestWithOptions, "GetNameInfoRequestWithOptions_DEPRECATED_ID"} // Placeholder ID
-
+        {0, &SFDNSRES::SetDnsAddresses, "SetDnsAddressesPrivateRequest"},
+        {1, &SFDNSRES::GetDnsAddressList, "GetDnsAddressPrivateRequest"},
+        {2, &SFDNSRES::GetHostByNameRequest, "GetHostByNameRequest"},
+        {3, &SFDNSRES::GetHostByAddrRequest, "GetHostByAddrRequest"},
+        {4, &SFDNSRES::GetHostStringError, "GetHostStringErrorRequest"},
+        {5, &SFDNSRES::GetGaiStringErrorRequest, "GetGaiStringErrorRequest"},
+        {6, &SFDNSRES::GetAddrInfoRequest, "GetAddrInfoRequest"},
+        {7, &SFDNSRES::GetNameInfoRequest, "GetNameInfoRequest"},
+        {8, nullptr, "GetCancelHandleRequest"},
+        {9, &SFDNSRES::CancelRequest, "CancelRequest"},
+        {10, &SFDNSRES::GetHostByNameRequestWithOptions, "GetHostByNameRequestWithOptions"},
+        {11, nullptr, "GetHostByAddrRequestWithOptions"},
+        {12, &SFDNSRES::GetAddrInfoRequestWithOptions, "GetAddrInfoRequestWithOptions"},
+        {13, &SFDNSRES::GetNameInfoRequestWithOptions, "GetNameInfoRequestWithOptions"},
+        {14, &SFDNSRES::ResolverSetOptionRequest, "ResolverSetOptionRequest"},
+        {15, &SFDNSRES::GetOptions, "ResolverGetOptionRequest"},
     };
     RegisterHandlers(functions);
 }
