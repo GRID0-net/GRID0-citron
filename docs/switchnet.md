@@ -53,4 +53,11 @@ Look for these in the log:
 | `SwitchNet login failed: login was refused (401)` | the username or password is wrong |
 | `SwitchNet login failed: could not reach …` | the server address is wrong, the server is not running, or its certificate is not signed by the trusted CA |
 | `SwitchNet login failed: '…' is not a host or host:port` | the SwitchNet server field is malformed |
-| `Redirecting … to private server …` never appears | the redirect address is empty, or the game resolved nothing yet |
+| `SwitchNet trace: … answered with …` never appears | the redirect address is empty, or the game resolved nothing yet |
+| `SwitchNet trace:` lines stop with no `connect` | the game resolved the server but never opened a connection to it: send the log |
+| `SwitchNet trace: connect … -> errno=111` (or `110`) | the server refused the connection, or it timed out: check that this machine can reach the server on 443 |
+
+Every line that follows a lookup of a Nintendo host starts with `SwitchNet trace:` and is logged at
+Warning, so it is in `citron_log.txt` with the default log filter: the socket calls the game made
+next, up to 256 of them per lookup. When reporting a problem, stop emulation before copying the
+log, so that it is complete.
