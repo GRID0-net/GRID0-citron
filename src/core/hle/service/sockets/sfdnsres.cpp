@@ -169,6 +169,10 @@ static std::pair<u32, GetAddrInfoError> GetHostByNameRequestImpl(HLERequestConte
     const std::optional<std::string> redirect = PrivateServerRedirect(host);
     if (redirect) {
         LOG_INFO(Network, "Redirecting {} to private server {}", host, *redirect);
+        ArmPrivateServerTrace();
+        LOG_WARNING(Network, "SwitchNet trace: {} answered with {}; tracing the socket calls that "
+                             "follow",
+                    host, *redirect);
     } else if (blocked_domains.find(host) != blocked_domains.end()) {
         // Prevent resolution of Nintendo servers
         LOG_WARNING(Network, "Resolution of hostname {} requested, returning EAI_AGAIN", host);
@@ -294,6 +298,10 @@ static std::pair<u32, GetAddrInfoError> GetAddrInfoRequestImpl(HLERequestContext
     const std::optional<std::string> redirect = PrivateServerRedirect(host);
     if (redirect) {
         LOG_INFO(Network, "Redirecting {} to private server {}", host, *redirect);
+        ArmPrivateServerTrace();
+        LOG_WARNING(Network, "SwitchNet trace: {} answered with {}; tracing the socket calls that "
+                             "follow",
+                    host, *redirect);
     } else if (blocked_domains.find(host) != blocked_domains.end()) {
         // Prevent resolution of Nintendo servers
         LOG_WARNING(Network, "Resolution of hostname {} requested, returning EAI_AGAIN", host);

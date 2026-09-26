@@ -20,4 +20,16 @@ namespace Service::Sockets {
  */
 std::optional<std::string> PrivateServerRedirect(std::string_view host);
 
+/**
+ * Arms a short trace of the guest's socket calls. Called when a lookup is answered with the
+ * private server's address: the calls that follow are the connection to it, which is where a game
+ * that fails to go online stops. The trace is logged at Warning, so it is in the log even with the
+ * default filter, which hides every other socket call.
+ */
+void ArmPrivateServerTrace();
+
+/// Whether to log the next traced socket call. Each call uses up one of a fixed budget, so a busy
+/// connection cannot flood the log.
+bool TakePrivateServerTrace();
+
 } // namespace Service::Sockets

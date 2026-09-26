@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cctype>
 
 #include "common/logging.h"
@@ -77,6 +78,28 @@ std::optional<std::string> PrivateServerRedirect(std::string_view host) {
     }
 
     return primary;
+}
+
+namespace {
+// Enough for a connection to be opened, its TLS handshake and its first requests, with room
+// for a retry; a poll that is re-checked while deferred is not counted until it returns.
+constexpr int TraceBudget = 256;
+std::atomic<int> trace_remaining{0};
+} // namespace
+
+void ArmPrivateServerTrace() {
+    trace_remaining.store(TraceBudget, std::memory_order_relaxed);
+}
+
+bool TakePrivateServerTrace() {
+    int remaining = trace_remaining.load(std::memory_order_relaxed);
+    while (remaining > 0) {
+        if (trace_remaining.compare_exchange_weak(remaining, remaining - 1,
+                                                  std::memory_order_relaxed)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 } // namespace Service::Sockets

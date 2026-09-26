@@ -16,6 +16,7 @@
 #include "core/hle/service/ipc_helpers.h"
 #include "core/hle/service/sockets/bsd.h"
 #include "core/hle/service/sockets/deferred_poll_waker.h"
+#include "core/hle/service/sockets/private_server.h"
 #include "core/hle/service/sockets/sockets_translate.h"
 #include "core/internal_network/network.h"
 #include "core/internal_network/socket_proxy.h"
@@ -26,6 +27,30 @@ using Common::Expected;
 using Common::Unexpected;
 
 namespace Service::Sockets {
+
+// The private-server connection trace: the socket calls that follow a lookup answered with the
+// private server's address, at Warning so that a log taken with the default filter still says
+// how far the game got. See ArmPrivateServerTrace.
+#define SWITCHNET_TRACE(format, ...)                                                               \
+    do {                                                                                           \
+        if (TakePrivateServerTrace()) {                                                            \
+            LOG_WARNING(Service, "SwitchNet trace: " format, ##__VA_ARGS__);                       \
+        }                                                                                          \
+    } while (0)
+
+namespace {
+/// "fd:events->revents" for each entry of a pollfd array, for the trace.
+std::string DescribePollFds(std::span<const u8> pollfds, s32 nfds) {
+    std::string out;
+    for (s32 i = 0; i < nfds && (i + 1) * sizeof(PollFD) <= pollfds.size(); ++i) {
+        PollFD pollfd;
+        std::memcpy(&pollfd, pollfds.data() + i * sizeof(PollFD), sizeof(PollFD));
+        out += fmt::format("{}{}:{:#x}->{:#x}", i ? " " : "", pollfd.fd,
+                           static_cast<u16>(pollfd.events), static_cast<u16>(pollfd.revents));
+    }
+    return out;
+}
+} // namespace
 
 namespace {
 
@@ -170,6 +195,8 @@ private:
 
 void BSD::PollWork::Execute(BSD* bsd) {
     std::tie(ret, bsd_errno) = bsd->PollImpl(write_buffer, read_buffer, nfds, timeout);
+    SWITCHNET_TRACE("poll nfds={} timeout={} -> {} errno={} [{}]", nfds, timeout, ret,
+                    static_cast<u32>(bsd_errno), DescribePollFds(write_buffer, nfds));
 }
 
 void BSD::PollWork::Response(HLERequestContext& ctx) {
@@ -201,6 +228,15 @@ void BSD::AcceptWork::Response(HLERequestContext& ctx) {
 
 void BSD::ConnectWork::Execute(BSD* bsd) {
     bsd_errno = bsd->ConnectImpl(fd, addr);
+    if (addr.size() == sizeof(SockAddrIn)) {
+        const auto addr_in = GetValue<SockAddrIn>(addr);
+        SWITCHNET_TRACE("connect fd={} to {}:{} -> errno={}", fd,
+                        Network::IPv4AddressToString(addr_in.ip), addr_in.portno,
+                        static_cast<u32>(bsd_errno));
+    } else {
+        SWITCHNET_TRACE("connect fd={} with a {}-byte address -> errno={}", fd, addr.size(),
+                        static_cast<u32>(bsd_errno));
+    }
 }
 
 void BSD::ConnectWork::Response(HLERequestContext& ctx) {
@@ -212,6 +248,8 @@ void BSD::ConnectWork::Response(HLERequestContext& ctx) {
 
 void BSD::RecvWork::Execute(BSD* bsd) {
     std::tie(ret, bsd_errno) = bsd->RecvImpl(fd, flags, message);
+    SWITCHNET_TRACE("recv fd={} len={} flags={:#x} -> {} errno={}", fd, message.size(), flags, ret,
+                    static_cast<u32>(bsd_errno));
 }
 
 void BSD::RecvWork::Response(HLERequestContext& ctx) {
@@ -225,6 +263,8 @@ void BSD::RecvWork::Response(HLERequestContext& ctx) {
 
 void BSD::RecvFromWork::Execute(BSD* bsd) {
     std::tie(ret, bsd_errno) = bsd->RecvFromImpl(fd, flags, message, addr);
+    SWITCHNET_TRACE("recvfrom fd={} len={} -> {} errno={}", fd, message.size(), ret,
+                    static_cast<u32>(bsd_errno));
 }
 
 void BSD::RecvFromWork::Response(HLERequestContext& ctx) {
@@ -242,6 +282,8 @@ void BSD::RecvFromWork::Response(HLERequestContext& ctx) {
 
 void BSD::SendWork::Execute(BSD* bsd) {
     std::tie(ret, bsd_errno) = bsd->SendImpl(fd, flags, message);
+    SWITCHNET_TRACE("send fd={} len={} flags={:#x} -> {} errno={}", fd, message.size(), flags, ret,
+                    static_cast<u32>(bsd_errno));
 }
 
 void BSD::SendWork::Response(HLERequestContext& ctx) {
@@ -253,6 +295,8 @@ void BSD::SendWork::Response(HLERequestContext& ctx) {
 
 void BSD::SendToWork::Execute(BSD* bsd) {
     std::tie(ret, bsd_errno) = bsd->SendToImpl(fd, flags, message, addr);
+    SWITCHNET_TRACE("sendto fd={} len={} -> {} errno={}", fd, message.size(), ret,
+                    static_cast<u32>(bsd_errno));
 }
 
 void BSD::SendToWork::Response(HLERequestContext& ctx) {
@@ -315,6 +359,8 @@ void BSD::Socket(HLERequestContext& ctx) {
 
     const auto [fd, bsd_errno] = SocketImpl(static_cast<Domain>(domain), static_cast<Type>(type),
                                             static_cast<Protocol>(protocol));
+    SWITCHNET_TRACE("socket domain={} type={:#x} protocol={} -> fd={} errno={}", domain, type,
+                    protocol, fd, static_cast<u32>(bsd_errno));
 
     IPC::ResponseBuilder rb{ctx, 4};
     rb.Push(ResultSuccess);
@@ -435,6 +481,8 @@ void BSD::GetSockOpt(HLERequestContext& ctx) {
               optval.size());
 
     const Errno err = GetSockOptImpl(fd, level, optname, optval);
+    SWITCHNET_TRACE("getsockopt fd={} level={:#x} optname={:#x} -> errno={}", fd, level, optname,
+                    static_cast<u32>(err));
 
     ctx.WriteBuffer(optval);
 
@@ -464,6 +512,8 @@ void BSD::Fcntl(HLERequestContext& ctx) {
     LOG_DEBUG(Service, "called. fd={} cmd={} arg={}", fd, cmd, arg);
 
     const auto [ret, bsd_errno] = FcntlImpl(fd, static_cast<FcntlCmd>(cmd), arg);
+    SWITCHNET_TRACE("fcntl fd={} cmd={} arg={:#x} -> {} errno={}", fd, cmd, arg, ret,
+                    static_cast<u32>(bsd_errno));
 
     IPC::ResponseBuilder rb{ctx, 4};
     rb.Push(ResultSuccess);
@@ -482,7 +532,10 @@ void BSD::SetSockOpt(HLERequestContext& ctx) {
     LOG_DEBUG(Service, "called. fd={} level={} optname=0x{:x} optlen={}", fd, level,
               static_cast<u32>(optname), optval.size());
 
-    BuildErrnoResponse(ctx, SetSockOptImpl(fd, level, optname, optval));
+    const Errno set_errno = SetSockOptImpl(fd, level, optname, optval);
+    SWITCHNET_TRACE("setsockopt fd={} level={:#x} optname={:#x} -> errno={}", fd, level, optname,
+                    static_cast<u32>(set_errno));
+    BuildErrnoResponse(ctx, set_errno);
 }
 
 void BSD::Shutdown(HLERequestContext& ctx) {
@@ -586,6 +639,7 @@ void BSD::Write(HLERequestContext& ctx) {
         if (bsd_errno == Errno::SUCCESS && deferred_poll_waker) {
             deferred_poll_waker->Wake();
         }
+        SWITCHNET_TRACE("eventfd write fd={} +{} -> errno={}", fd, add, static_cast<u32>(bsd_errno));
         IPC::ResponseBuilder rb{ctx, 4};
         rb.Push(ResultSuccess);
         rb.Push<s32>(bsd_errno == Errno::SUCCESS ? static_cast<s32>(sizeof(u64)) : -1);
@@ -624,6 +678,7 @@ void BSD::Read(HLERequestContext& ctx) {
         if (bsd_errno == Errno::SUCCESS) {
             ctx.WriteBuffer(&out, sizeof(out));
         }
+        SWITCHNET_TRACE("eventfd read fd={} -> {} errno={}", fd, out, static_cast<u32>(bsd_errno));
         IPC::ResponseBuilder rb{ctx, 4};
         rb.Push(ResultSuccess);
         rb.Push<s32>(bsd_errno == Errno::SUCCESS ? static_cast<s32>(sizeof(u64)) : -1);
@@ -645,7 +700,9 @@ void BSD::Close(HLERequestContext& ctx) {
 
     LOG_DEBUG(Service, "called. fd={}", fd);
 
-    BuildErrnoResponse(ctx, CloseImpl(fd));
+    const Errno close_errno = CloseImpl(fd);
+    SWITCHNET_TRACE("close fd={} -> errno={}", fd, static_cast<u32>(close_errno));
+    BuildErrnoResponse(ctx, close_errno);
 }
 
 void BSD::DuplicateSocket(HLERequestContext& ctx) {
@@ -692,6 +749,8 @@ void BSD::EventFd(HLERequestContext& ctx) {
             file_descriptors[fd]->eventfd = std::move(state);
         }
     }
+
+    SWITCHNET_TRACE("eventfd initval={} flags={:#x} -> fd={}", initval, flags, fd);
 
     IPC::ResponseBuilder rb{ctx, 4};
     rb.Push(ResultSuccess);
@@ -1527,6 +1586,11 @@ void BSD::PollWithEventFd(HLERequestContext& ctx, s32 nfds, s32 timeout) {
     if (ret >= 0 && !write_buffer.empty()) {
         ctx.WriteBuffer(write_buffer);
     }
+    SWITCHNET_TRACE("poll(eventfd) nfds={} timeout={} -> {} errno={} [{}]", nfds, timeout, ret,
+                    static_cast<u32>(bsd_errno),
+                    DescribePollFds(ret >= 0 ? std::span<const u8>{write_buffer}
+                                             : std::span<const u8>{pollfds},
+                                    nfds));
     IPC::ResponseBuilder rb{ctx, 4};
     rb.Push(ResultSuccess);
     rb.Push<s32>(ret);
