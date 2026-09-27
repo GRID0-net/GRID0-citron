@@ -6,6 +6,7 @@
 #include <cctype>
 
 #include "common/settings.h"
+#include "core/hle/service/sockets/private_server.h"
 #include "core/file_sys/private_server_patches.h"
 
 namespace FileSys {
@@ -58,7 +59,7 @@ bool SameBuildId(std::string_view a, std::string_view b) {
 } // namespace
 
 std::vector<std::span<const u8>> GetPrivateServerPatches(std::string_view build_id) {
-    if (Settings::values.private_server_address.GetValue().empty()) {
+    if (Service::Sockets::PrivateServerAddress().empty()) {
         return {};
     }
     for (const auto& entry : Splatoon3) {

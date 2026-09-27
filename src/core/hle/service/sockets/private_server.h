@@ -18,6 +18,10 @@ namespace Service::Sockets {
  * the server does not serve: those then fail against the private server rather than reaching
  * Nintendo, which is the point of running one.
  */
+/// The private server address in effect: the setting, or else the GRID0+ login's server.
+/// Empty when neither is set, which turns redirection off.
+std::string PrivateServerAddress();
+
 std::optional<std::string> PrivateServerRedirect(std::string_view host);
 
 /**

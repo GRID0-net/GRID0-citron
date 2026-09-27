@@ -13,6 +13,7 @@
 #include "common/fs/file.h"
 #include "common/hex_util.h"
 #include "common/settings.h"
+#include "core/hle/service/sockets/private_server.h"
 #include "common/string_util.h"
 
 #include "core/hle/service/ssl/ssl_backend.h"
@@ -368,7 +369,7 @@ void AddPrivateServerTrust() {
         return;
     }
 
-    if (Settings::values.private_server_address.GetValue().empty()) {
+    if (Service::Sockets::PrivateServerAddress().empty()) {
         return;
     }
 

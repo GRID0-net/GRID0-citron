@@ -51,8 +51,26 @@ bool IsNintendoDomain(std::string_view name) {
 
 } // namespace
 
+std::string PrivateServerAddress() {
+    std::string address = Settings::values.private_server_address.GetValue();
+    if (!address.empty()) {
+        return address;
+    }
+    // A config saved before the GRID0+ defaults existed holds an explicit empty address, which
+    // overrides them. With a GRID0+ login set, use that login's server: signing in there while
+    // the game itself talks to Nintendo fails with 2321-4992.
+    if (Settings::values.switchnet_username.GetValue().empty()) {
+        return {};
+    }
+    address = Settings::values.switchnet_server.GetValue();
+    if (const auto colon = address.find(':'); colon != std::string::npos) {
+        address.resize(colon);
+    }
+    return address;
+}
+
 std::optional<std::string> PrivateServerRedirect(std::string_view host) {
-    const std::string& primary = Settings::values.private_server_address.GetValue();
+    const std::string primary = PrivateServerAddress();
     if (primary.empty()) {
         return std::nullopt;
     }
@@ -66,8 +84,10 @@ std::optional<std::string> PrivateServerRedirect(std::string_view host) {
     // from a different address: the same address makes the console de-duplicate the probe, and
     // matchmaking then finds matches that never start.
     if (name.starts_with("nncs2")) {
-        const std::string& secondary =
-            Settings::values.private_server_nat_secondary_address.GetValue();
+        std::string secondary = Settings::values.private_server_nat_secondary_address.GetValue();
+        if (secondary.empty() && primary == Settings::Grid0DefaultAddress) {
+            secondary = std::string(Settings::Grid0DefaultNatSecondaryAddress);
+        }
         if (!secondary.empty()) {
             return secondary;
         }
