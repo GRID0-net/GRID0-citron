@@ -154,6 +154,7 @@ static FileSys::VirtualFile VfsDirectoryCreateFileWrapper(const FileSys::Virtual
 #include "citron/install_dialog.h"
 #include "citron/loading_screen.h"
 #include "citron/main.h"
+#include "citron/grid0_friends_dialog.h"
 #include "citron/play_time_manager.h"
 #include "citron/startup_checks.h"
 #include "citron/uisettings.h"
@@ -1888,6 +1889,25 @@ void GMainWindow::ConnectMenuEvents() {
     ui->menu_Reset_Window_Size->addActions({ui->action_Reset_Window_Size_720,
                                             ui->action_Reset_Window_Size_900,
                                             ui->action_Reset_Window_Size_1080});
+
+    // GRID0+: friends on the server the emulator signs in to.
+    {
+        auto* grid0_menu = new QMenu(tr("GRID0+"), ui->menubar);
+        ui->menubar->insertMenu(ui->menu_Multiplayer->menuAction(), grid0_menu);
+        auto* friends_action = grid0_menu->addAction(tr("&Friends…"));
+        friends_action->setShortcut(QKeySequence(tr("Ctrl+Shift+F")));
+        connect(friends_action, &QAction::triggered, this, [this] {
+            if (grid0_friends_dialog) {
+                grid0_friends_dialog->raise();
+                grid0_friends_dialog->activateWindow();
+                return;
+            }
+            grid0_friends_dialog = new Grid0FriendsDialog(this);
+            grid0_friends_dialog->show();
+        });
+        auto* account_action = grid0_menu->addAction(tr("&Account and server…"));
+        connect(account_action, &QAction::triggered, this, &GMainWindow::OnConfigure);
+    }
 
     // Multiplayer
     connect(ui->action_View_Lobby, &QAction::triggered, multiplayer_state,

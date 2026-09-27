@@ -8,6 +8,7 @@
 #include <memory>
 #include <optional>
 #include <QMainWindow>
+#include <QPointer>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QTimer>
@@ -426,6 +427,7 @@ private:
     std::unique_ptr<Ui::MainWindow> ui;
     std::unique_ptr<PlayTime::PlayTimeManager> play_time_manager;
     MultiplayerState* multiplayer_state = nullptr;
+    QPointer<class Grid0FriendsDialog> grid0_friends_dialog;
     GRenderWindow *render_window;
     GameList *game_list;
     ControllerNavigation *controller_navigation = nullptr;

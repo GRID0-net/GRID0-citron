@@ -29,4 +29,22 @@ bool IsConfigured();
  */
 std::optional<std::string> GetIdToken();
 
+/// The BAAS access token from the same login, for the server's own emulator API.
+std::optional<std::string> GetAccessToken();
+
+struct Response {
+    int status;
+    std::string body;
+};
+
+/**
+ * A request to the server's BAAS host with the access token, for the emulator API
+ * (/emulator/v1/...). nullopt when not logged in or the server cannot be reached.
+ */
+std::optional<Response> Request(const std::string& method, const std::string& path,
+                                const std::string& json_body = {});
+
+/// GETs an https URL on a Nintendo host the server answers for (a profile picture).
+std::optional<std::string> Fetch(const std::string& url);
+
 } // namespace Service::Account::SwitchNet

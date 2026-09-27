@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <chrono>
+#include <memory>
 #include <mutex>
 #include <set>
 
@@ -34,6 +35,7 @@ constexpr auto ExpiryMargin = std::chrono::minutes(5);
 
 std::mutex mutex;
 std::string cached_token;
+std::string cached_access_token;
 std::chrono::system_clock::time_point cached_expiry;
 std::string cached_for; // server + username the cached token belongs to
 std::set<std::string> reported_failures;
@@ -161,28 +163,42 @@ std::optional<Endpoint> ParseServer(const std::string& server) {
     return endpoint;
 }
 
-std::optional<std::string> Login() {
+// A client for one of Nintendo's hostnames, dialled at the configured server instead. Every
+// request keeps the Nintendo hostname, so the Host header and SNI are what the server routes on.
+std::unique_ptr<httplib::SSLClient> MakeClient(const std::string& host, int timeout_seconds) {
     const std::string& server = Settings::values.switchnet_server.GetValue();
     const auto endpoint = ParseServer(server);
     if (!endpoint) {
         ReportFailure(fmt::format("'{}' is not a host or host:port", server));
-        return std::nullopt;
+        return nullptr;
     }
-
-    httplib::SSLClient client{std::string{BaasHost}, endpoint->port};
-    // Every request keeps the Nintendo hostname, so the Host header and SNI are what the server
-    // routes on, while the socket is dialled at the operator's address instead.
-    client.set_hostname_addr_map({{std::string{BaasHost}, endpoint->host}});
-    client.set_connection_timeout(10);
-    client.set_read_timeout(10);
-    client.enable_server_certificate_verification(true);
+    auto client = std::make_unique<httplib::SSLClient>(host, endpoint->port);
+    client->set_hostname_addr_map({{host, endpoint->host}});
+    client->set_connection_timeout(timeout_seconds);
+    client->set_read_timeout(timeout_seconds);
+    client->enable_server_certificate_verification(true);
 
     X509_STORE* store = BuildTrustStore();
     if (!store) {
         ReportFailure("the CA to verify the server with could not be loaded");
+        return nullptr;
+    }
+    client->set_ca_cert_store(store); // owned by the client from here
+    return client;
+}
+
+struct Tokens {
+    std::string id;
+    std::string access;
+};
+
+std::optional<Tokens> Login() {
+    const std::string& server = Settings::values.switchnet_server.GetValue();
+    auto client_ptr = MakeClient(std::string{BaasHost}, 10);
+    if (!client_ptr) {
         return std::nullopt;
     }
-    client.set_ca_cert_store(store); // owned by the client from here
+    auto& client = *client_ptr;
 
     const httplib::Params form{
         {"username", Settings::values.switchnet_username.GetValue()},
@@ -212,12 +228,16 @@ std::optional<std::string> Login() {
         return std::nullopt;
     }
 
-    return body["idToken"].get<std::string>();
+    Tokens tokens{body["idToken"].get<std::string>(), {}};
+    if (body.contains("accessToken") && body["accessToken"].is_string()) {
+        tokens.access = body["accessToken"].get<std::string>();
+    }
+    return tokens;
 }
 
 #else
 
-std::optional<std::string> Login() {
+std::optional<Tokens> Login() {
     ReportFailure("this build has no HTTPS client (built without ENABLE_WEB_SERVICE)");
     return std::nullopt;
 }
@@ -232,42 +252,120 @@ bool IsConfigured() {
            !Settings::values.switchnet_password.GetValue().empty();
 }
 
-std::optional<std::string> GetIdToken() {
-    if (!IsConfigured()) {
-        return std::nullopt;
-    }
-
-    std::scoped_lock lock{mutex};
-
+namespace {
+// Logs in if the cached tokens are missing or about to expire. Holds `mutex`.
+bool EnsureLoggedIn() {
     const std::string identity = Settings::values.switchnet_server.GetValue() + '\n' +
                                  Settings::values.switchnet_username.GetValue();
     if (!cached_token.empty() && cached_for == identity &&
         std::chrono::system_clock::now() + ExpiryMargin < cached_expiry) {
-        return cached_token;
+        return true;
     }
 
     const auto now = std::chrono::steady_clock::now();
     if (cached_for == identity && last_failure != std::chrono::steady_clock::time_point{} &&
         now - last_failure < RetryAfterFailure) {
-        return std::nullopt;
+        return false;
     }
 
-    auto token = Login();
-    if (!token) {
+    auto tokens = Login();
+    if (!tokens) {
         last_failure = now;
         cached_for = identity;
         cached_token.clear();
-        return std::nullopt;
+        cached_access_token.clear();
+        return false;
     }
     last_failure = {};
 
-    LOG_INFO(Service_ACC, "Logged in to SwitchNet as {}",
+    LOG_INFO(Service_ACC, "Logged in to GRID0+ as {}",
              Settings::values.switchnet_username.GetValue());
     reported_failures.clear();
-    cached_token = std::move(*token);
+    cached_token = std::move(tokens->id);
+    cached_access_token = std::move(tokens->access);
     cached_expiry = ReadExpiry(cached_token);
     cached_for = identity;
+    return true;
+}
+} // namespace
+
+std::optional<std::string> GetIdToken() {
+    if (!IsConfigured()) {
+        return std::nullopt;
+    }
+    std::scoped_lock lock{mutex};
+    if (!EnsureLoggedIn()) {
+        return std::nullopt;
+    }
     return cached_token;
+}
+
+std::optional<std::string> GetAccessToken() {
+    if (!IsConfigured()) {
+        return std::nullopt;
+    }
+    std::scoped_lock lock{mutex};
+    if (!EnsureLoggedIn() || cached_access_token.empty()) {
+        return std::nullopt;
+    }
+    return cached_access_token;
+}
+
+std::optional<Response> Request(const std::string& method, const std::string& path,
+                                const std::string& json_body) {
+#ifdef ENABLE_WEB_SERVICE
+    const auto token = GetAccessToken();
+    if (!token) {
+        return std::nullopt;
+    }
+    auto client = MakeClient(std::string{BaasHost}, 8);
+    if (!client) {
+        return std::nullopt;
+    }
+    const httplib::Headers headers{{"Authorization", "Bearer " + *token}};
+    httplib::Result result;
+    if (method == "GET") {
+        result = client->Get(path, headers);
+    } else if (method == "DELETE") {
+        result = client->Delete(path, headers);
+    } else {
+        result = client->Post(path, headers, json_body, "application/json");
+    }
+    if (!result) {
+        return std::nullopt;
+    }
+    return Response{result->status, result->body};
+#else
+    return std::nullopt;
+#endif
+}
+
+std::optional<std::string> Fetch(const std::string& url) {
+#ifdef ENABLE_WEB_SERVICE
+    // Only https URLs on hosts SwitchNet answers for: the host is redirected to the server.
+    constexpr std::string_view Scheme = "https://";
+    if (!url.starts_with(Scheme)) {
+        return std::nullopt;
+    }
+    const auto rest = url.substr(Scheme.size());
+    const auto slash = rest.find('/');
+    const std::string host = rest.substr(0, slash);
+    const std::string path = slash == std::string::npos ? "/" : rest.substr(slash);
+    if (!host.ends_with(".nintendo.com") && !host.ends_with(".nintendo.net")) {
+        return std::nullopt;
+    }
+    auto client = MakeClient(host, 8);
+    if (!client) {
+        return std::nullopt;
+    }
+    auto result = client->Get(path);
+    if (!result || result->status != 200) {
+        return std::nullopt;
+    }
+    return result->body;
+#else
+    return std::nullopt;
+#endif
 }
 
 } // namespace Service::Account::SwitchNet

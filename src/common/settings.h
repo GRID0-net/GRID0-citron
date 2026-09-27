@@ -132,6 +132,10 @@ struct TouchFromButtonMap {
     std::vector<std::string> buttons;
 };
 
+// The GRID0+ server the private-server settings point at out of the box.
+constexpr std::string_view Grid0DefaultAddress = "89.168.58.206";
+constexpr std::string_view Grid0DefaultNatSecondaryAddress = "145.241.167.178";
+
 struct Values {
     Linkage linkage{};
 
@@ -733,24 +737,25 @@ struct Values {
     Setting<std::string> lobby_api_url{linkage, "api.ynet-fun.xyz", "lobby_api_url",
                                        Category::Network};
 
-    // Private Nintendo servers (SwitchNet). Every one of these is empty by default, and an empty
-    // value is the "off" state: there is no separate enable switch that could contradict them.
+    // Private Nintendo servers: GRID0+ (a SwitchNet server) by default. An empty address is the
+    // "off" state: there is no separate enable switch that could contradict it.
     //
     // Address that Nintendo's hostnames resolve to. An IP address, not a hostname: the resolver
     // this configures is the one that would have to resolve it.
-    Setting<std::string> private_server_address{linkage, std::string(), "private_server_address",
-                                                Category::Network};
+    Setting<std::string> private_server_address{linkage, std::string(Grid0DefaultAddress),
+                                                "private_server_address", Category::Network};
     // Address nncs2 resolves to. Pia's NAT check needs it to differ from nncs1's.
     Setting<std::string> private_server_nat_secondary_address{
-        linkage, std::string(), "private_server_nat_secondary_address", Category::Network};
+        linkage, std::string(Grid0DefaultNatSecondaryAddress),
+        "private_server_nat_secondary_address", Category::Network};
     // PEM bundle of extra CAs the guest's TLS trusts. Empty uses the built-in SwitchNet Local CA
     // whenever private_server_address is set.
     Setting<std::string> private_server_ca_bundle{linkage, std::string(),
                                                   "private_server_ca_bundle", Category::Network};
-    // The emulator's own login to a SwitchNet server, as host or host:port, with the username and
-    // password chosen on the server's /register page.
-    Setting<std::string> switchnet_server{linkage, std::string(), "switchnet_server",
-                                          Category::Network};
+    // The emulator's own login to the server, as host or host:port, with the username and
+    // password the GRID0+ Discord bot's /register gives.
+    Setting<std::string> switchnet_server{linkage, std::string(Grid0DefaultAddress),
+                                          "switchnet_server", Category::Network};
     Setting<std::string> switchnet_username{linkage, std::string(), "switchnet_username",
                                             Category::Network};
     Setting<std::string> switchnet_password{linkage, std::string(), "switchnet_password",

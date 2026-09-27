@@ -701,6 +701,8 @@ add_library(core STATIC
     hle/service/filesystem/save_data_controller.cpp
     hle/service/filesystem/save_data_controller.h
     hle/service/friend/friend.cpp
+    hle/service/friend/grid0_friends.cpp
+    hle/service/friend/grid0_friends.h
     hle/service/friend/friend.h
     hle/service/friend/friend_interface.cpp
     hle/service/friend/friend_interface.h

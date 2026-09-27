@@ -244,6 +244,8 @@ add_executable(citron
     multiplayer/host_room.cpp
     multiplayer/host_room.h
     multiplayer/host_room.ui
+    grid0_friends_dialog.cpp
+    grid0_friends_dialog.h
     multiplayer/lobby.cpp
     multiplayer/lobby.h
     multiplayer/lobby.ui
