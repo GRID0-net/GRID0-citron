@@ -19,6 +19,7 @@
 #include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -912,6 +913,25 @@ Errno Socket::SetReuseAddr(bool enable) {
 
 Errno Socket::SetKeepAlive(bool enable) {
     return SetSockOpt<u32>(fd, SO_KEEPALIVE, enable ? 1 : 0);
+}
+
+Errno Socket::SetNoDelay(bool enable) {
+    const int value = enable ? 1 : 0;
+    if (setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&value),
+                   sizeof(value)) != SOCKET_ERROR) {
+        return Errno::SUCCESS;
+    }
+    return GetAndLogLastError();
+}
+
+std::pair<bool, Errno> Socket::GetNoDelay() {
+    int value = 0;
+    socklen_t len = sizeof(value);
+    if (getsockopt(fd, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<char*>(&value), &len) !=
+        SOCKET_ERROR) {
+        return {value != 0, Errno::SUCCESS};
+    }
+    return {false, GetAndLogLastError()};
 }
 
 Errno Socket::SetBroadcast(bool enable) {

@@ -66,6 +66,10 @@ private:
         Network::Domain domain = Network::Domain::INET;
         Network::Type type = Network::Type::DGRAM;
         Network::Protocol protocol = Network::Protocol::UDP;
+        // Every option value the guest set successfully, keyed by (level << 32 | optname), so
+        // getsockopt can report it back. gRPC sets each option and then reads it to verify,
+        // closing the socket before connecting if the read fails.
+        std::map<u64, std::vector<u8>> set_options;
     };
 
     struct PollWork {

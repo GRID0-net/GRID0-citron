@@ -2,7 +2,10 @@
 // SPDX-FileCopyrightText: Copyright 2025 citron Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
 #include <array>
+#include <cstring>
+#include <optional>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -148,6 +151,14 @@ public:
 
     Network::Errno SetKeepAlive(bool) override {
         return Network::Errno::SUCCESS;
+    }
+
+    Network::Errno SetNoDelay(bool) override {
+        return Network::Errno::SUCCESS;
+    }
+
+    std::pair<bool, Network::Errno> GetNoDelay() override {
+        return {true, Network::Errno::SUCCESS};
     }
 
     Network::Errno SetBroadcast(bool) override {
@@ -533,6 +544,11 @@ void BSD::SetSockOpt(HLERequestContext& ctx) {
               static_cast<u32>(optname), optval.size());
 
     const Errno set_errno = SetSockOptImpl(fd, level, optname, optval);
+    if (set_errno == Errno::SUCCESS && IsFileDescriptorValid(fd)) {
+        file_descriptors[fd]->set_options[(static_cast<u64>(level) << 32) |
+                                          static_cast<u32>(optname)]
+            .assign(optval.begin(), optval.end());
+    }
     SWITCHNET_TRACE("setsockopt fd={} level={:#x} optname={:#x} -> errno={}", fd, level, optname,
                     static_cast<u32>(set_errno));
     BuildErrnoResponse(ctx, set_errno);
@@ -1086,12 +1102,35 @@ Errno BSD::GetSockOptImpl(s32 fd, u32 level, OptName optname, std::vector<u8>& o
     if (!file_descriptors[fd]->socket)
         return Errno::BADF;
 
+    Network::SocketBase* const socket = file_descriptors[fd]->socket.get();
+
+    // gRPC reads TCP_NODELAY back after setting it and closes the socket if it cannot.
+    if (level == static_cast<u32>(SocketLevel::TCP) &&
+        static_cast<u32>(optname) == TCP_OPT_NODELAY) {
+        auto [enabled, err] = socket->GetNoDelay();
+        if (err == Network::Errno::SUCCESS) {
+            ASSERT_OR_EXECUTE_MSG(
+                optval.size() >= sizeof(u32), { return Errno::INVAL; },
+                "Incorrect getsockopt option size");
+            optval.resize(sizeof(u32));
+            PutValue(optval, static_cast<u32>(enabled ? 1 : 0));
+        }
+        return Translate(err);
+    }
+
+    if (optname != OptName::ERROR_) {
+        const auto& set = file_descriptors[fd]->set_options;
+        if (const auto it = set.find((static_cast<u64>(level) << 32) | static_cast<u32>(optname));
+            it != set.end() && optval.size() >= it->second.size()) {
+            optval.assign(it->second.begin(), it->second.end());
+            return Errno::SUCCESS;
+        }
+    }
+
     if (level != static_cast<u32>(SocketLevel::SOCKET)) {
         LOG_WARNING(Service, "(STUBBED) Unknown getsockopt level={}, returning INVAL", level);
         return Errno::INVAL;
     }
-
-    Network::SocketBase* const socket = file_descriptors[fd]->socket.get();
 
     switch (optname) {
     case OptName::ERROR_: {
@@ -1119,12 +1158,32 @@ Errno BSD::SetSockOptImpl(s32 fd, u32 level, OptName optname, std::span<const u8
     if (!file_descriptors[fd]->socket)
         return Errno::BADF;
 
+    Network::SocketBase* const socket = file_descriptors[fd]->socket.get();
+
+    // TCP_NODELAY is the only IPPROTO_TCP option a game is known to set. gRPC (Splatoon 3's
+    // online client) sets it on every connection and treats a failure as fatal: it closed each
+    // socket without ever calling connect, and the game showed a communication error.
+    if (level == static_cast<u32>(SocketLevel::TCP)) {
+        if (static_cast<u32>(optname) != TCP_OPT_NODELAY || optval.size() != sizeof(u32)) {
+            LOG_WARNING(Service, "(STUBBED) Unknown IPPROTO_TCP optname=0x{:x}, returning INVAL",
+                        static_cast<u32>(optname));
+            return Errno::INVAL;
+        }
+        return Translate(socket->SetNoDelay(GetValue<u32>(optval) != 0));
+    }
+
     if (level != static_cast<u32>(SocketLevel::SOCKET)) {
         LOG_WARNING(Service, "(STUBBED) Unknown setsockopt level={}, returning INVAL", level);
         return Errno::INVAL;
     }
 
-    Network::SocketBase* const socket = file_descriptors[fd]->socket.get();
+    // Horizon's own socket options live above the BSD range (0x80000000+). They tune Nintendo's
+    // socket stack and have no host equivalent; refusing them makes gRPC give up on the socket
+    // before connecting, exactly like a failed TCP_NODELAY, so they are accepted and ignored.
+    if ((static_cast<u32>(optname) & 0x80000000) != 0) {
+        LOG_DEBUG(Service, "Ignoring Horizon socket option 0x{:x}", static_cast<u32>(optname));
+        return Errno::SUCCESS;
+    }
 
     if (optname == OptName::LINGER) {
         if (optval.size() != sizeof(Linger)) {
@@ -1203,9 +1262,7 @@ std::pair<s32, Errno> BSD::RecvImpl(s32 fd, u32 flags, std::vector<u8>& message)
     if (Settings::values.airplane_mode.GetValue()) {
         return {-1, Errno::AGAIN};
     }
-    if (!descriptor.is_connection_based) {
-        return {-1, Errno::AGAIN};
-    }
+    // Datagram sockets receive too: see RecvFromImpl.
 
     // Apply flags
     using Network::FLAG_MSG_DONTWAIT;
@@ -1238,10 +1295,10 @@ std::pair<s32, Errno> BSD::RecvFromImpl(s32 fd, u32 flags, std::vector<u8>& mess
         addr.clear();
         return {-1, Errno::AGAIN};
     }
-    if (!descriptor.is_connection_based) {
-        addr.clear();
-        return {-1, Errno::AGAIN};
-    }
+    // Datagram sockets receive like any other. Returning EAGAIN for every one of them (as this
+    // used to) hid every UDP reply from the guest while its poll kept reporting the socket
+    // readable: Splatoon 3's latency measurement spun on it for seconds, and Pia -- the match
+    // traffic itself -- runs over UDP.
 
     Network::SockAddrIn addr_in{};
     Network::SockAddrIn* p_addr_in = nullptr;
@@ -1901,12 +1958,129 @@ void BSD::Open(HLERequestContext& ctx) {
     rb.PushEnum(static_cast<Errno>(EACCES));
 }
 
+// RecvMMsg(u32 fd, u32 vlen, u32 flags, u32 reserved, TimeVal timeout) -> (i32 ret, u32 bsd_errno),
+// with the in/out buffer serialised as in SendMMsg. Each iov's data is space to receive into:
+// received bytes are written there in place, each message's length is set, and the buffer is
+// written back.
+//
+// gRPC's recvmsg reaches the service as a RecvMMsg of one message. Left as an EOPNOTSUPP stub,
+// Splatoon 3's online client closed its connection to the game server the first time the
+// socket became readable, before reading the TLS handshake reply.
 void BSD::RecvMMsg(HLERequestContext& ctx) {
-    LOG_WARNING(Service, "(STUBBED) called RecvMMsg");
-    IPC::ResponseBuilder rb{ctx, 4};
-    rb.Push(ResultSuccess);
-    rb.Push<s32>(0); // num_msgs processed
-    rb.PushEnum(static_cast<Errno>(EOPNOTSUPP));
+    IPC::RequestParser rp{ctx};
+    const s32 fd = rp.Pop<s32>();
+    const u32 vlen = rp.Pop<u32>();
+    const u32 flags = rp.Pop<u32>();
+
+    auto respond = [&ctx](s32 ret, Errno err) {
+        IPC::ResponseBuilder rb{ctx, 4};
+        rb.Push(ResultSuccess);
+        rb.Push<s32>(ret);
+        rb.PushEnum(err);
+    };
+
+    if (ctx.BufferDescriptorB().empty()) {
+        respond(-1, Errno::INVAL);
+        return;
+    }
+    const auto& desc = ctx.BufferDescriptorB()[0];
+    std::vector<u8> buf(desc.Size());
+    ctx.GetMemory().ReadBlock(desc.Address(), buf.data(), buf.size());
+
+    struct Space {
+        std::size_t offset;
+        std::size_t size;
+    };
+    struct Message {
+        std::vector<Space> iovs;
+        std::size_t length_offset;
+    };
+    std::vector<Message> messages;
+
+    std::size_t pos = 1; // header byte, ignored as Horizon does
+    auto skip = [&](std::size_t n) {
+        if (pos + n > buf.size()) {
+            return false;
+        }
+        pos += n;
+        return true;
+    };
+    auto read_u32 = [&](u32& v) {
+        if (pos + sizeof(v) > buf.size()) {
+            return false;
+        }
+        std::memcpy(&v, buf.data() + pos, sizeof(v));
+        pos += sizeof(v);
+        return true;
+    };
+
+    bool parsed = true;
+    for (u32 i = 0; i < vlen && parsed; ++i) {
+        Message message;
+        u32 name_len = 0, iov_count = 0, control_len = 0, msg_flags = 0;
+        parsed = read_u32(name_len) && skip(name_len) && read_u32(iov_count);
+        for (u32 j = 0; j < iov_count && parsed; ++j) {
+            u64 len = 0;
+            parsed = pos + sizeof(len) <= buf.size();
+            if (parsed) {
+                std::memcpy(&len, buf.data() + pos, sizeof(len));
+                pos += sizeof(len);
+                message.iovs.push_back({pos, static_cast<std::size_t>(len)});
+                parsed = skip(static_cast<std::size_t>(len));
+            }
+        }
+        parsed = parsed && read_u32(control_len) && skip(control_len) && read_u32(msg_flags);
+        message.length_offset = pos;
+        parsed = parsed && skip(sizeof(u32));
+        if (parsed) {
+            messages.push_back(std::move(message));
+        }
+    }
+    if (!parsed) {
+        respond(-1, Errno::INVAL);
+        return;
+    }
+
+    std::size_t capacity = 0;
+    for (const auto& message : messages) {
+        for (const auto& iov : message.iovs) {
+            capacity += iov.size;
+        }
+    }
+    std::vector<u8> received(capacity);
+    const auto [ret, err] = RecvImpl(fd, flags, received);
+    SWITCHNET_TRACE("recvmmsg fd={} vlen={} capacity={} -> {} errno={}", fd, vlen, capacity, ret,
+                    static_cast<u32>(err));
+    if (err != Errno::SUCCESS || ret < 0) {
+        respond(-1, err);
+        return;
+    }
+
+    // A stream socket's bytes fill the messages' buffers in order.
+    std::size_t left = static_cast<std::size_t>(ret);
+    std::size_t from = 0;
+    s32 filled_messages = 0;
+    for (const auto& message : messages) {
+        u32 length = 0;
+        for (const auto& iov : message.iovs) {
+            const std::size_t n = std::min(left, iov.size);
+            std::memcpy(buf.data() + iov.offset, received.data() + from, n);
+            from += n;
+            left -= n;
+            length += static_cast<u32>(n);
+        }
+        std::memcpy(buf.data() + message.length_offset, &length, sizeof(length));
+        if (length == 0 && filled_messages > 0) {
+            break;
+        }
+        ++filled_messages;
+        if (left == 0) {
+            break;
+        }
+    }
+
+    ctx.GetMemory().WriteBlock(desc.Address(), buf.data(), buf.size());
+    respond(filled_messages, Errno::SUCCESS);
 }
 
 void BSD::RegisterResourceStatisticsName(HLERequestContext& ctx) {
@@ -1917,12 +2091,113 @@ void BSD::RegisterResourceStatisticsName(HLERequestContext& ctx) {
     rb.PushEnum(static_cast<Errno>(EOPNOTSUPP));
 }
 
+// SendMMsg(u32 fd, u32 vlen, u32 flags) -> (i32 ret, u32 bsd_errno), with an in/out buffer
+// holding the messages serialised as Horizon does: one ignored header byte, then per message
+// u32 name_len + name, u32 iov_count + (u64 len + data) per iov, u32 control_len + control,
+// u32 flags, u32 length. The length of each message sent is written back in place.
+//
+// gRPC's sendmsg reaches the service as a SendMMsg of one message. Left as an EOPNOTSUPP stub,
+// Splatoon 3's online client retried it without end once connected (a million calls in 40 s),
+// so the TLS handshake to the game server was never sent.
 void BSD::SendMMsg(HLERequestContext& ctx) {
-    LOG_WARNING(Service, "(STUBBED) called SendMMsg");
-    IPC::ResponseBuilder rb{ctx, 4};
-    rb.Push(ResultSuccess);
-    rb.Push<s32>(0); // num_msgs processed
-    rb.PushEnum(static_cast<Errno>(EOPNOTSUPP));
+    IPC::RequestParser rp{ctx};
+    const s32 fd = rp.Pop<s32>();
+    const u32 vlen = rp.Pop<u32>();
+    const u32 flags = rp.Pop<u32>();
+
+    auto respond = [&ctx](s32 ret, Errno err) {
+        IPC::ResponseBuilder rb{ctx, 4};
+        rb.Push(ResultSuccess);
+        rb.Push<s32>(ret);
+        rb.PushEnum(err);
+    };
+
+    if (ctx.BufferDescriptorB().empty()) {
+        respond(-1, Errno::INVAL);
+        return;
+    }
+    const auto& desc = ctx.BufferDescriptorB()[0];
+    std::vector<u8> buf(desc.Size());
+    ctx.GetMemory().ReadBlock(desc.Address(), buf.data(), buf.size());
+
+    std::size_t pos = 1; // header byte, ignored as Horizon does
+    auto take = [&](std::size_t n) -> std::optional<std::span<const u8>> {
+        if (pos + n > buf.size()) {
+            return std::nullopt;
+        }
+        std::span<const u8> out{buf.data() + pos, n};
+        pos += n;
+        return out;
+    };
+    auto take_u32 = [&]() -> std::optional<u32> {
+        const auto b = take(sizeof(u32));
+        if (!b) {
+            return std::nullopt;
+        }
+        u32 v;
+        std::memcpy(&v, b->data(), sizeof(v));
+        return v;
+    };
+
+    s32 sent_messages = 0;
+    Errno first_error = Errno::SUCCESS;
+    for (u32 i = 0; i < vlen; ++i) {
+        const auto name_len = take_u32();
+        const auto name = name_len ? take(*name_len) : std::nullopt;
+        const auto iov_count = take_u32();
+        if (!name_len || !name || !iov_count) {
+            first_error = Errno::INVAL;
+            break;
+        }
+        std::vector<u8> data;
+        bool ok = true;
+        for (u32 j = 0; j < *iov_count && ok; ++j) {
+            const auto len_bytes = take(sizeof(u64));
+            if (!len_bytes) {
+                ok = false;
+                break;
+            }
+            u64 len;
+            std::memcpy(&len, len_bytes->data(), sizeof(len));
+            const auto piece = take(static_cast<std::size_t>(len));
+            ok = piece.has_value();
+            if (ok) {
+                data.insert(data.end(), piece->begin(), piece->end());
+            }
+        }
+        const auto control_len = ok ? take_u32() : std::nullopt;
+        if (!control_len || !take(*control_len) || !take_u32() /* flags */) {
+            first_error = Errno::INVAL;
+            break;
+        }
+        const std::size_t length_pos = pos;
+        if (!take(sizeof(u32))) {
+            first_error = Errno::INVAL;
+            break;
+        }
+
+        const auto [ret, err] = name->empty() ? SendImpl(fd, flags, data)
+                                              : SendToImpl(fd, flags, data, *name);
+        if (err != Errno::SUCCESS || ret < 0) {
+            first_error = err;
+            break;
+        }
+        const u32 length = static_cast<u32>(ret);
+        std::memcpy(buf.data() + length_pos, &length, sizeof(length));
+        ++sent_messages;
+        if (static_cast<std::size_t>(ret) < data.size()) {
+            break; // a short send ends the batch, as sendmmsg does
+        }
+    }
+
+    ctx.GetMemory().WriteBlock(desc.Address(), buf.data(), buf.size());
+    SWITCHNET_TRACE("sendmmsg fd={} vlen={} -> {} errno={}", fd, vlen, sent_messages,
+                    static_cast<u32>(first_error));
+    if (sent_messages == 0 && first_error != Errno::SUCCESS) {
+        respond(-1, first_error);
+        return;
+    }
+    respond(sent_messages, Errno::SUCCESS);
 }
 
 void BSD::SetThreadCoreMask(HLERequestContext& ctx) {
