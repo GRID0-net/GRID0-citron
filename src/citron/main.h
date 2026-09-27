@@ -428,6 +428,7 @@ private:
     std::unique_ptr<PlayTime::PlayTimeManager> play_time_manager;
     MultiplayerState* multiplayer_state = nullptr;
     QPointer<class Grid0FriendsDialog> grid0_friends_dialog;
+    QMenu* grid0_menu = nullptr;
     GRenderWindow *render_window;
     GameList *game_list;
     ControllerNavigation *controller_navigation = nullptr;

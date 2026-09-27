@@ -1181,6 +1181,8 @@ void GMainWindow::InitializeWidgets() {
     add_menu(ui->menu_Emulation);
     add_menu(ui->menu_View);
     add_menu(ui->menu_Tools);
+    grid0_menu = new QMenu(tr("GRID0+"), ui->menubar);
+    add_menu(grid0_menu);
     add_menu(ui->menu_Multiplayer);
     add_menu(ui->menu_Help);
 
@@ -1892,10 +1894,12 @@ void GMainWindow::ConnectMenuEvents() {
 
     // GRID0+: friends on the server the emulator signs in to.
     {
-        auto* grid0_menu = new QMenu(tr("GRID0+"), ui->menubar);
-        ui->menubar->insertMenu(ui->menu_Multiplayer->menuAction(), grid0_menu);
         auto* friends_action = grid0_menu->addAction(tr("&Friends…"));
         friends_action->setShortcut(QKeySequence(tr("Ctrl+Shift+F")));
+        // The menu bar is hidden in favour of the unified top bar, and a hidden menu's
+        // shortcuts do not fire; on the window itself this one always does.
+        friends_action->setShortcutContext(Qt::ApplicationShortcut);
+        addAction(friends_action);
         connect(friends_action, &QAction::triggered, this, [this] {
             if (grid0_friends_dialog) {
                 grid0_friends_dialog->raise();
