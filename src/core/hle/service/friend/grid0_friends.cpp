@@ -32,15 +32,16 @@ std::mutex mutex;
 std::condition_variable fetched_cv;
 std::vector<Friend> cache;
 bool have_list = false;
+// Counts finished fetches, successful or not: a warm wait ends when one finishes, so a server
+// that is down costs one bounded wait, not one per call.
+u64 fetches_done = 0;
+bool warm_waited = false;
 std::chrono::steady_clock::time_point last_fetch;
 std::atomic<bool> fetching{false};
 
 std::map<u64, std::vector<u8>> images;
 std::map<u64, bool> image_pending;
 
-std::string last_presence_key;
-std::chrono::steady_clock::time_point last_presence;
-std::atomic<bool> publishing{false};
 
 std::vector<u8> DecodeBase64(std::string_view in) {
     std::vector<u8> out;
@@ -150,6 +151,7 @@ std::optional<std::string> Problem(const std::optional<Account::Response>& respo
 
 void FetchNow() {
     std::vector<Friend> list;
+    // A blocking fetch and a background one may overlap; both results are the server's state.
     bool ok = false;
     if (const auto body = GetJson("/emulator/v1/friends");
         body && body->contains("friends") && (*body)["friends"].is_array()) {
@@ -164,6 +166,7 @@ void FetchNow() {
 
     std::scoped_lock lock{mutex};
     last_fetch = std::chrono::steady_clock::now();
+    ++fetches_done;
     if (ok) {
         if (!have_list || list.size() != cache.size()) {
             LOG_INFO(Service_Friend, "GRID0+: {} friend(s)", list.size());
@@ -206,11 +209,28 @@ std::vector<Friend> GetWarm(std::chrono::milliseconds wait) {
         return {};
     }
     std::unique_lock lock{mutex};
+    const bool stale = std::chrono::steady_clock::now() - last_fetch > RefreshInterval;
+    // Wait at most once per session: games that poll their friend list (NEX titles) must never
+    // block on it, and one that asks once (Splatoon 3) only needs the first answer to be real.
+    if (!have_list && !warm_waited) {
+        warm_waited = true;
+        const u64 before = fetches_done;
+        RefreshInBackground();
+        fetched_cv.wait_for(lock, wait, [before] { return fetches_done != before; });
+    } else if (!have_list || stale) {
+        RefreshInBackground();
+    }
+    return cache;
+}
+
+std::optional<std::vector<Friend>> FetchNowBlocking() {
+    if (!IsEnabled()) {
+        return std::nullopt;
+    }
+    FetchNow();
+    std::scoped_lock lock{mutex};
     if (!have_list) {
-        RefreshInBackground();
-        fetched_cv.wait_for(lock, wait, [] { return have_list; });
-    } else if (std::chrono::steady_clock::now() - last_fetch > RefreshInterval) {
-        RefreshInBackground();
+        return std::nullopt;
     }
     return cache;
 }
@@ -255,6 +275,42 @@ std::optional<std::vector<u8>> ProfileImage(u64 nsa_id, std::chrono::millisecond
     return std::nullopt;
 }
 
+namespace {
+// What this player should currently be shown as. The sender thread sends it whenever it
+// changes, and again every PresenceKeepAlive so the server does not expire it.
+std::string desired_body;
+std::string desired_key;
+std::string sent_key;
+bool sender_started = false;
+std::condition_variable presence_cv;
+
+void PresenceSender() {
+    std::unique_lock lock{mutex};
+    auto last_sent = std::chrono::steady_clock::time_point{};
+    while (true) {
+        presence_cv.wait_for(lock, std::chrono::seconds(5));
+        const auto now = std::chrono::steady_clock::now();
+        if (desired_key.empty() || now - last_sent < PresenceMinInterval) {
+            continue;
+        }
+        if (desired_key == sent_key && now - last_sent < PresenceKeepAlive) {
+            continue;
+        }
+        const std::string body = desired_body;
+        const std::string key = desired_key;
+        lock.unlock();
+        const auto response = Account::Request("POST", "/emulator/v1/presence", body);
+        lock.lock();
+        last_sent = std::chrono::steady_clock::now();
+        if (response && response->status < 300) {
+            sent_key = key;
+        } else {
+            LOG_DEBUG(Service_Friend, "GRID0+: presence not accepted");
+        }
+    }
+}
+} // namespace
+
 void PublishPresence(u32 status, u64 title_id, const std::vector<u8>& app_field) {
     if (!IsEnabled()) {
         return;
@@ -267,32 +323,31 @@ void PublishPresence(u32 status, u64 title_id, const std::vector<u8>& app_field)
         field.pop_back();
     }
     const std::string encoded = EncodeBase64(field);
-    const std::string key = fmt::format("{}|{}|{}", state, app_id, encoded);
+    const nlohmann::json body{{"state", state}, {"appId", app_id}, {"appField", encoded}};
 
-    {
-        std::scoped_lock lock{mutex};
-        const auto now = std::chrono::steady_clock::now();
-        if (now - last_presence < PresenceMinInterval) {
-            return;
-        }
-        if (key == last_presence_key && now - last_presence < PresenceKeepAlive) {
-            return;
-        }
-        last_presence_key = key;
-        last_presence = now;
+    std::scoped_lock lock{mutex};
+    desired_key = fmt::format("{}|{}|{}", state, app_id, encoded);
+    desired_body = body.dump();
+    if (!sender_started) {
+        sender_started = true;
+        std::thread(PresenceSender).detach();
     }
-    if (publishing.exchange(true)) {
+    presence_cv.notify_all();
+}
+
+void NoteRunningTitle(u64 title_id) {
+    if (!IsEnabled() || title_id == 0) {
         return;
     }
-
-    const nlohmann::json body{{"state", state}, {"appId", app_id}, {"appField", encoded}};
-    std::thread([payload = body.dump()] {
-        const auto response = Account::Request("POST", "/emulator/v1/presence", payload);
-        if (!response || response->status >= 300) {
-            LOG_DEBUG(Service_Friend, "GRID0+: presence not accepted");
+    {
+        std::scoped_lock lock{mutex};
+        // A game that sets its own presence keeps it; this only covers one that never does, so
+        // friends still see what it is playing.
+        if (!desired_key.empty()) {
+            return;
         }
-        publishing = false;
-    }).detach();
+    }
+    PublishPresence(2, title_id, {});
 }
 
 std::optional<Me> FetchMe() {

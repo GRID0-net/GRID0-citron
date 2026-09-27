@@ -56,6 +56,9 @@ std::vector<Friend> Get();
 /// early, and would otherwise keep an empty list for the whole session.
 std::vector<Friend> GetWarm(std::chrono::milliseconds wait);
 
+/// Fetches the friend list now, blocking. For the Friends window, after an action.
+std::optional<std::vector<Friend>> FetchNowBlocking();
+
 /// Forgets the cache, so the next Get fetches again.
 void Invalidate();
 
@@ -65,6 +68,10 @@ std::optional<std::vector<u8>> ProfileImage(u64 nsa_id, std::chrono::millisecond
 /// Reports this player's presence: the nn::friends status (0 offline, 1 online, 2 online play),
 /// the running title, and the game's presence blob. Rate limited and sent in the background.
 void PublishPresence(u32 status, u64 title_id, const std::vector<u8>& app_field);
+
+/// A game opened the friend service: show it as playing that title unless it sets its own
+/// presence, which is what a console's friends list shows for a running game.
+void NoteRunningTitle(u64 title_id);
 
 // ---- For the Friends window: blocking calls, run them off the UI thread. ----
 

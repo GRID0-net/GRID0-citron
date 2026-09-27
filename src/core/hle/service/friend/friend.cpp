@@ -73,6 +73,7 @@ class IFriendService final : public ServiceFramework<IFriendService> {
 public:
     explicit IFriendService(Core::System& system_)
         : ServiceFramework{system_, "IFriendService"}, service_context{system, "IFriendService"} {
+        Grid0::NoteRunningTitle(system.GetApplicationProcessProgramID());
         // clang-format off
         static const FunctionInfo functions[] = {
             {0, &IFriendService::GetCompletionEvent, "GetCompletionEvent"},

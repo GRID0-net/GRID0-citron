@@ -233,8 +233,9 @@ void Grid0FriendsDialog::Refresh() {
             if (!*me) {
                 return;
             }
-            Grid0::Invalidate();
-            *friends = Grid0::GetWarm(std::chrono::milliseconds(5000));
+            if (auto fresh = Grid0::FetchNowBlocking()) {
+                *friends = std::move(*fresh);
+            }
             for (const auto& f : *friends) {
                 (*pictures)[f.nsa_id] = Grid0::ProfileImage(f.nsa_id, std::chrono::milliseconds(3000));
             }
