@@ -21,7 +21,7 @@ bool IsConfigured();
  * A game asks the account service for this token before it can reach any online game server. On
  * a console the account sysmodule gets it by logging in with a device account; an emulator has no
  * device account, so this logs in the way a person does, with the username and password chosen
- * on the server's own /register page (POST /login), and hands the game the token the server
+ * from the GRID0+ Discord bot (/register) (POST /login), and hands the game the token the server
  * signed. No Nintendo credential is presented, verified or forged.
  *
  * Returns nullopt when not configured or when the login fails. A failure is logged once per
