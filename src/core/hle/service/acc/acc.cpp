@@ -776,9 +776,19 @@ private:
     void GetAccountId(HLERequestContext& ctx) {
         LOG_DEBUG(Service_ACC, "called");
 
+        // Signed in to GRID0+, this is the account's network service account id: the id NPLN
+        // names this user by, and the owner of every friend relationship it sends. Splatoon 3
+        // fetched its friend list and then never looked at it (no presences, empty friend list)
+        // while this answered with a hash of the local profile instead.
+        u64 account_id = profile_manager->GetLastOpenedUser().Hash();
+        if (SwitchNet::IsConfigured()) {
+            if (const auto nsa = SwitchNet::GetNetworkServiceAccountId()) {
+                account_id = *nsa;
+            }
+        }
         IPC::ResponseBuilder rb{ctx, 4};
         rb.Push(ResultSuccess);
-        rb.PushRaw<u64>(profile_manager->GetLastOpenedUser().Hash());
+        rb.PushRaw<u64>(account_id);
     }
 
     void EnsureIdTokenCacheAsync(HLERequestContext& ctx) {

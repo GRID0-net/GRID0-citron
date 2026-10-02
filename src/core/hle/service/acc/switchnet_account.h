@@ -6,6 +6,8 @@
 #include <optional>
 #include <string>
 
+#include "common/common_types.h"
+
 namespace Service::Account::SwitchNet {
 
 /**
@@ -28,6 +30,12 @@ bool IsConfigured();
  * distinct reason, with the actual cause.
  */
 std::optional<std::string> GetIdToken();
+
+/**
+ * The signed-in user's network service account id: the id token's subject, which is how the
+ * server's NPLN names this user and every friend relationship. nullopt when not logged in.
+ */
+std::optional<u64> GetNetworkServiceAccountId();
 
 /// The BAAS access token from the same login, for the server's own emulator API.
 std::optional<std::string> GetAccessToken();

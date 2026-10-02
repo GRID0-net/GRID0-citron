@@ -289,6 +289,33 @@ bool EnsureLoggedIn() {
 }
 } // namespace
 
+std::optional<u64> GetNetworkServiceAccountId() {
+    const auto token = GetIdToken();
+    if (!token) {
+        return std::nullopt;
+    }
+    const auto first = token->find('.');
+    const auto second = token->find('.', first + 1);
+    if (first == std::string::npos || second == std::string::npos) {
+        return std::nullopt;
+    }
+    const auto decoded =
+        DecodeBase64Url(std::string_view{*token}.substr(first + 1, second - first - 1));
+    if (!decoded) {
+        return std::nullopt;
+    }
+    const auto claims = nlohmann::json::parse(*decoded, nullptr, false);
+    if (!claims.is_object() || !claims.contains("sub") || !claims["sub"].is_string()) {
+        return std::nullopt;
+    }
+    const auto subject = claims["sub"].get<std::string>();
+    if (subject.empty() || subject.size() > 16 ||
+        subject.find_first_not_of("0123456789abcdefABCDEF") != std::string::npos) {
+        return std::nullopt;
+    }
+    return std::stoull(subject, nullptr, 16);
+}
+
 std::optional<std::string> GetIdToken() {
     if (!IsConfigured()) {
         return std::nullopt;
