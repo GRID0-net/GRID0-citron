@@ -924,6 +924,15 @@ Errno Socket::SetNoDelay(bool enable) {
     return GetAndLogLastError();
 }
 
+Errno Socket::SetIpOption(IpOption option, int value) {
+    const int name = option == IpOption::TTL ? IP_TTL : IP_TOS;
+    if (setsockopt(fd, IPPROTO_IP, name, reinterpret_cast<const char*>(&value), sizeof(value)) !=
+        SOCKET_ERROR) {
+        return Errno::SUCCESS;
+    }
+    return GetAndLogLastError();
+}
+
 std::pair<bool, Errno> Socket::GetNoDelay() {
     int value = 0;
     socklen_t len = sizeof(value);

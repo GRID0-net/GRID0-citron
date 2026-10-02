@@ -161,6 +161,10 @@ public:
         return {true, Network::Errno::SUCCESS};
     }
 
+    Network::Errno SetIpOption(Network::IpOption, int) override {
+        return Network::Errno::SUCCESS;
+    }
+
     Network::Errno SetBroadcast(bool) override {
         return Network::Errno::SUCCESS;
     }
@@ -1170,6 +1174,21 @@ Errno BSD::SetSockOptImpl(s32 fd, u32 level, OptName optname, std::span<const u8
             return Errno::INVAL;
         }
         return Translate(socket->SetNoDelay(GetValue<u32>(optval) != 0));
+    }
+
+    // Pia (Splatoon 3's P2P layer) sets IP_TTL on its socket as it opens a session and gives up
+    // when that fails: the room was created on the server, then dropped with a communication
+    // error within half a second, before a single packet was sent.
+    if (level == static_cast<u32>(SocketLevel::IP)) {
+        const u32 name = static_cast<u32>(optname);
+        if ((name != IP_OPT_TTL && name != IP_OPT_TOS) || optval.size() != sizeof(u32)) {
+            LOG_WARNING(Service, "(STUBBED) Unknown IPPROTO_IP optname=0x{:x}, returning INVAL",
+                        name);
+            return Errno::INVAL;
+        }
+        return Translate(socket->SetIpOption(name == IP_OPT_TTL ? Network::IpOption::TTL
+                                                                    : Network::IpOption::TOS,
+                                             static_cast<int>(GetValue<u32>(optval))));
     }
 
     if (level != static_cast<u32>(SocketLevel::SOCKET)) {

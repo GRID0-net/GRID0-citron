@@ -350,6 +350,10 @@ Errno ProxySocket::SetNoDelay(bool enable) {
     return Errno::SUCCESS;
 }
 
+Errno ProxySocket::SetIpOption(IpOption option, int value) {
+    return Errno::SUCCESS;
+}
+
 std::pair<bool, Errno> ProxySocket::GetNoDelay() {
     return {true, Errno::SUCCESS};
 }

@@ -49,6 +49,12 @@ enum class Errno {
     OTHER,
 };
 
+/// IPPROTO_IP socket options the guest can set, mapped to the host's numbering in network.cpp.
+enum class IpOption {
+    TOS,
+    TTL,
+};
+
 enum class GetAddrInfoError {
     SUCCESS,
     ADDRFAMILY,

@@ -72,11 +72,16 @@ enum class Protocol : u32 {
 
 enum class SocketLevel : u32 {
     SOCKET = 0xffff, // i.e. SOL_SOCKET
+    IP = 0,          // i.e. IPPROTO_IP
     TCP = 6,         // i.e. IPPROTO_TCP
 };
 
 // IPPROTO_TCP-level option names, as the guest sends them.
 constexpr u32 TCP_OPT_NODELAY = 0x1;
+
+// IPPROTO_IP-level option names, BSD numbering as the guest sends them.
+constexpr u32 IP_OPT_TOS = 0x3;
+constexpr u32 IP_OPT_TTL = 0x4;
 
 enum class OptName : u32 {
     REUSEADDR = 0x4,

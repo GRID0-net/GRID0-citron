@@ -80,6 +80,9 @@ public:
 
     virtual std::pair<bool, Errno> GetNoDelay() = 0;
 
+    /// IPPROTO_IP options: IP_TOS and IP_TTL. Pia sets a short TTL to punch NAT holes.
+    virtual Errno SetIpOption(IpOption option, int value) = 0;
+
     virtual Errno SetBroadcast(bool enable) = 0;
 
     virtual Errno SetSndBuf(u32 value) = 0;
@@ -151,6 +154,8 @@ public:
     Errno SetNoDelay(bool enable) override;
 
     std::pair<bool, Errno> GetNoDelay() override;
+
+    Errno SetIpOption(IpOption option, int value) override;
 
     Errno SetBroadcast(bool enable) override;
 
