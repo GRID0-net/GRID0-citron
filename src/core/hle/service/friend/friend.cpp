@@ -190,11 +190,33 @@ public:
     }
 
     ~IFriendService() override {
+        // nnSdk closes an async session only after storing its result.
+        if (is_async_session) {
+            completion_event->Signal();
+        }
         service_context.CloseEvent(completion_event);
+    }
+
+    // The SDK's AsyncContext (nn::friends::EnsureFriendListAvailable and the
+    // other async calls) waits on this event before reading a result. Every
+    // command here answers synchronously, so signal it after each one; never
+    // signalling it left Splatoon 3 waiting forever and never asking for the
+    // friend list. Same approach as citron-nextendo.
+    Result HandleSyncRequest(Kernel::KServerSession& session, HLERequestContext& context) override {
+        const Result result = ServiceFrameworkBase::HandleSyncRequest(session, context);
+        if (!is_async_session) {
+            completion_event->Signal();
+        }
+        ++handled_requests;
+        return result;
     }
 
     void GetCompletionEvent(HLERequestContext& ctx) {
         LOG_DEBUG(Service_Friend, "GetCompletionEvent called");
+        // AsyncContextInternal opens a fresh session and asks for this first.
+        if (handled_requests == 0) {
+            is_async_session = true;
+        }
         IPC::ResponseBuilder rb{ctx, 2, 1};
         rb.Push(ResultSuccess);
         rb.PushCopyObjects(completion_event->GetReadableEvent());
@@ -350,6 +372,8 @@ private:
 
     KernelHelpers::ServiceContext service_context;
     Kernel::KEvent* completion_event;
+    u64 handled_requests{};
+    bool is_async_session{};
 };
 
 class INotificationService final : public ServiceFramework<INotificationService> {
