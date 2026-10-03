@@ -1,11 +1,13 @@
 // SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <cstdlib>
 #include <fmt/format.h>
 #include "common/assert.h"
 #include "common/logging.h"
 #include "common/profiling.h"
 #include "common/settings.h"
+#include "core/arm/debug.h"
 #include "core/core.h"
 #include "core/hle/ipc.h"
 #include "core/hle/kernel/kernel.h"
@@ -84,6 +86,30 @@ void ServiceFrameworkBase::ReportUnimplementedFunction(HLERequestContext& ctx,
     }
 }
 
+namespace {
+// SwitchNet debugging: CITRON_BACKTRACE_ON is a comma-separated list of IPC
+// command names. When the guest calls one, log the calling thread's guest
+// backtrace, so a failure the game decides internally can be traced to the
+// code that raised it.
+bool WantsBacktrace(std::string_view name) {
+    static const std::string list = [] {
+        const char* v = std::getenv("CITRON_BACKTRACE_ON");
+        return v ? "," + std::string(v) + "," : std::string{};
+    }();
+    return !list.empty() && list.find("," + std::string(name) + ",") != std::string::npos;
+}
+
+void MaybeLogBacktrace(HLERequestContext& ctx, const char* name, const std::string& service) {
+    if (name == nullptr || !WantsBacktrace(name)) {
+        return;
+    }
+    LOG_CRITICAL(Service, "SwitchNet backtrace for {}::{}:", service, name);
+    for (const auto& e : Core::GetBacktrace(&ctx.GetThread())) {
+        LOG_CRITICAL(Service, "  {:20} {:016X} {:016X} {}", e.module, e.address, e.offset, e.name);
+    }
+}
+} // namespace
+
 void ServiceFrameworkBase::InvokeRequest(HLERequestContext& ctx) {
     auto itr = handlers.find(ctx.GetCommand());
     const FunctionInfoBase* info = itr == handlers.end() ? nullptr : &itr->second;
@@ -92,6 +118,7 @@ void ServiceFrameworkBase::InvokeRequest(HLERequestContext& ctx) {
     }
 
     LOG_TRACE(Service, "{}", MakeFunctionString(info->name, GetServiceName(), ctx.CommandBuffer()));
+    MaybeLogBacktrace(ctx, info->name, GetServiceName());
     handler_invoker(this, info->handler_callback, ctx);
 }
 
@@ -106,6 +133,7 @@ void ServiceFrameworkBase::InvokeRequestTipc(HLERequestContext& ctx) {
     }
 
     LOG_TRACE(Service, "{}", MakeFunctionString(info->name, GetServiceName(), ctx.CommandBuffer()));
+    MaybeLogBacktrace(ctx, info->name, GetServiceName());
     handler_invoker(this, info->handler_callback, ctx);
 }
 
