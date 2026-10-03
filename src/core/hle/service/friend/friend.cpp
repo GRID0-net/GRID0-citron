@@ -191,7 +191,10 @@ public:
 
     ~IFriendService() override {
         // nnSdk closes an async session only after storing its result.
+        LOG_DEBUG(Service_Friend, "IFriendService closed: async={} requests={}", is_async_session,
+                  handled_requests);
         if (is_async_session) {
+            LOG_DEBUG(Service_Friend, "signalling completion on async session close");
             completion_event->Signal();
         }
         service_context.CloseEvent(completion_event);
@@ -205,6 +208,7 @@ public:
     Result HandleSyncRequest(Kernel::KServerSession& session, HLERequestContext& context) override {
         const Result result = ServiceFrameworkBase::HandleSyncRequest(session, context);
         if (!is_async_session) {
+            LOG_DEBUG(Service_Friend, "signalling completion after command {}", context.GetCommand());
             completion_event->Signal();
         }
         ++handled_requests;
