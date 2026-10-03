@@ -1,6 +1,8 @@
 // SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <span>
+#include <string>
 #include "common/hex_util.h"
 #include "common/logging.h"
 #include "core/core.h"
@@ -301,13 +303,26 @@ private:
         rb.Push(ResultSuccess);
     }
 
+    // SwitchNet debugging: the play report's event id and msgpack body, with
+    // non-printable bytes shown as '.'. Splatoon 3 files its network-error
+    // reports (erepo_network_error and the referee/match keys) through here, so
+    // this names the error behind an otherwise code-less communication error.
+    static std::string Printable(std::span<const u8> b) {
+        std::string out;
+        out.reserve(b.size());
+        for (const u8 c : b) {
+            out.push_back(c >= 0x20 && c < 0x7f ? static_cast<char>(c) : '.');
+        }
+        return out;
+    }
+
     void Unknown10107(HLERequestContext& ctx) {
-        LOG_WARNING(Service_PREPO, "(STUBBED) called");
         IPC::RequestParser rp{ctx};
         [[maybe_unused]] const auto _1 = rp.PopRaw<u128>();
         [[maybe_unused]] const auto _2 = rp.PopRaw<u64>();
-        [[maybe_unused]] const auto _a = ctx.ReadBufferA(0);
-        [[maybe_unused]] const auto _x = ctx.ReadBufferX(0);
+        const auto _a = ctx.ReadBufferA(0);
+        const auto _x = ctx.ReadBufferX(0);
+        LOG_WARNING(Service_PREPO, "play report: X=[{}] A=[{}]", Printable(_x), Printable(_a));
         IPC::ResponseBuilder rb{ctx, 2};
         rb.Push(ResultSuccess);
     }
