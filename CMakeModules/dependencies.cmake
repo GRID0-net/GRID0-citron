@@ -89,7 +89,7 @@ if (NOT TARGET fmt::fmt)
         NAME fmt
         GITHUB_REPOSITORY fmtlib/fmt
         GIT_TAG e8244777ee1c32df8233c215ac9ff626b2dd2c38
-        OPTIONS "FMT_INSTALL OFF"
+        OPTIONS "FMT_INSTALL OFF" "FMT_MODULE OFF"
     )
 endif()
 
