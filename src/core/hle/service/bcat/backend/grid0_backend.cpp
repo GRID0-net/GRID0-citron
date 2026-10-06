@@ -32,7 +32,7 @@ std::string Sha256Hex(const void* data, size_t size) {
     std::array<u8, 32> hash{};
     unsigned int len = static_cast<unsigned int>(hash.size());
     EVP_Digest(data, size, hash.data(), &len, EVP_sha256(), nullptr);
-    return Common::HexToString(hash);
+    return Common::HexToString(hash, false);
 }
 
 } // namespace
