@@ -20,7 +20,7 @@ constexpr Result VerifyNameValidInternal(std::array<char, 0x20> name, char match
         return !std::isalnum(static_cast<u8>(c)) && c != '_' && c != match_char && c != '\0';
     });
     if (null_chars == 0x20 || null_chars == 0 || bad_chars != 0 || name[0x1F] != '\0') {
-        LOG_ERROR(Service_BCAT, "Name passed was invalid!");
+        LOG_ERROR(Service_BCAT, "Name passed was invalid! ({:02X})", fmt::join(name, ""));
         return ResultInvalidArgument;
     }
 
