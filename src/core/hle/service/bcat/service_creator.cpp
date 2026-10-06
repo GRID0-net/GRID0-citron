@@ -2,6 +2,8 @@
 // SPDX-FileCopyrightText: Copyright 2025 citron Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include "core/hle/service/acc/switchnet_account.h"
+#include "core/hle/service/bcat/backend/grid0_backend.h"
 #include "core/hle/service/bcat/bcat_service.h"
 #include "core/hle/service/bcat/delivery_cache_progress_service.h"
 #include "core/hle/service/bcat/delivery_cache_storage_service.h"
@@ -13,6 +15,10 @@ namespace Service::BCAT {
 
 std::unique_ptr<BcatBackend> CreateBackendFromSettings([[maybe_unused]] Core::System& system,
                                                        DirectoryGetter getter) {
+    // Signed in to GRID0+, a game's delivery cache comes from the server, as on a console.
+    if (Service::Account::SwitchNet::IsConfigured()) {
+        return std::make_unique<Grid0BcatBackend>(std::move(getter));
+    }
     return std::make_unique<NullBcatBackend>(std::move(getter));
 }
 
