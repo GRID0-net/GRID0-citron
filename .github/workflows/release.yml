@@ -140,7 +140,7 @@ jobs:
     name: Publish the release
     needs: [linux, windows, macos]
     if: >-
-      ${{ !cancelled() && inputs.publish != false &&
+      ${{ !cancelled() && (github.event_name != 'workflow_dispatch' || inputs.publish != false) &&
           (needs.linux.result == 'success' || needs.linux.result == 'skipped') &&
           (needs.windows.result == 'success' || needs.windows.result == 'skipped') &&
           (needs.macos.result == 'success' || needs.macos.result == 'skipped') &&
