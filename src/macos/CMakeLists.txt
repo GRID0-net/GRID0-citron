@@ -6,9 +6,13 @@ set_target_properties(citrosis_native_bridge PROPERTIES COMPILE_OPTIONS "")
 target_compile_options(citrosis_native_bridge PRIVATE -fno-rtti -fwrapv -fno-strict-aliasing)
 target_link_libraries(citrosis_native_bridge PUBLIC core common input_common frontend_common network web_service nlohmann_json::nlohmann_json)
 add_executable(citrosis-mac MACOSX_BUNDLE CitrosisApp.swift)
+# Use the release workflow's version for the native frontend as well as the Qt app.
+set(CITROSIS_MACOS_VERSION "0.2.0" CACHE STRING "Citrosis macOS bundle version")
 set_target_properties(citrosis-mac PROPERTIES COMPILE_OPTIONS "" Swift_LANGUAGE_VERSION 5
  MACOSX_BUNDLE_INFO_PLIST "${PROJECT_SOURCE_DIR}/src/citron/Info.plist"
- MACOSX_BUNDLE_BUNDLE_NAME Citrosis MACOSX_BUNDLE_SHORT_VERSION_STRING 0.2.0 MACOSX_BUNDLE_BUNDLE_VERSION 0.2.0)
+ MACOSX_BUNDLE_BUNDLE_NAME Citrosis
+ MACOSX_BUNDLE_SHORT_VERSION_STRING "${CITROSIS_MACOS_VERSION}"
+ MACOSX_BUNDLE_BUNDLE_VERSION "${CITROSIS_MACOS_VERSION}")
 target_compile_options(citrosis-mac PRIVATE -parse-as-library -target "${ARCHITECTURE}-apple-macosx${CMAKE_OSX_DEPLOYMENT_TARGET}")
 target_link_libraries(citrosis-mac PRIVATE citrosis_native_bridge "-lc++" "-framework SwiftUI" "-framework AppKit" "-framework Metal" "-framework QuartzCore" "-framework GameController")
 set_source_files_properties(${PROJECT_SOURCE_DIR}/dist/citron.icns PROPERTIES MACOSX_PACKAGE_LOCATION Resources)

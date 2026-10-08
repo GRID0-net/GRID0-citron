@@ -18,6 +18,11 @@ on:
         description: 'Publish the release. Turn off to only build and keep the artifacts.'
         type: boolean
         default: true
+      platform:
+        description: 'Platform to rebuild. Select macos to refresh only the macOS asset on an existing release.'
+        type: choice
+        options: [all, linux, windows, macos]
+        default: all
 
 permissions:
   contents: write
@@ -27,6 +32,7 @@ env:
 
 jobs:
   linux:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'linux' }}
     name: Linux (AppImage)
     runs-on: ubuntu-24.04
     steps:
@@ -56,6 +62,7 @@ jobs:
           path: out/*
 
   windows:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'windows' }}
     name: Windows (cross-compiled)
     runs-on: ubuntu-24.04
     steps:
@@ -80,6 +87,7 @@ jobs:
           path: out/*
 
   macos:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'macos' }}
     name: macOS (Apple silicon)
     runs-on: macos-15
     steps:
@@ -100,11 +108,28 @@ jobs:
         run: ./build-citrosis-macos.sh --setup
       - name: Build and package
         run: ./build-citrosis-macos.sh --package --build-dir build --jobs 3 -- -DCITROSIS_MACOS_VERSION="${VERSION#v}"
+      - name: Verify the native app and release version
+        run: |
+          python3 - <<'PY'
+          import os
+          import plistlib
+          from pathlib import Path
+          app = Path("build/dist/Citrosis.app")
+          with (app / "Contents/Info.plist").open("rb") as source:
+              info = plistlib.load(source)
+          version = os.environ["VERSION"].removeprefix("v")
+          assert info["CFBundleExecutable"] == "citrosis-mac", info
+          assert info["CFBundleShortVersionString"] == version, info
+          assert info["CFBundleVersion"] == version, info
+          assert (app / "Contents/MacOS/citrosis-mac").is_file()
+          print(f"Verified native Citrosis {version}")
+          PY
       - name: Collect
         run: |
           set -euo pipefail
           mkdir -p out
-          cp build/dist/Citrosis-arm64.zip "out/Citrosis-${VERSION#v}-macos-arm64.zip"
+          # Keep the existing asset URL when replacing the legacy Qt app with Citrosis.
+          cp build/dist/Citrosis-arm64.zip "out/citron-${VERSION#v}-macos-arm64.zip"
           ls -la out
       - uses: actions/upload-artifact@v4
         with:
@@ -114,7 +139,12 @@ jobs:
   publish:
     name: Publish the release
     needs: [linux, windows, macos]
-    if: ${{ !cancelled() && inputs.publish != false && needs.linux.result == 'success' && needs.windows.result == 'success' && needs.macos.result == 'success' }}
+    if: >-
+      ${{ !cancelled() && inputs.publish != false &&
+          (needs.linux.result == 'success' || needs.linux.result == 'skipped') &&
+          (needs.windows.result == 'success' || needs.windows.result == 'skipped') &&
+          (needs.macos.result == 'success' || needs.macos.result == 'skipped') &&
+          (needs.linux.result == 'success' || needs.windows.result == 'success' || needs.macos.result == 'success') }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4

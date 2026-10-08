@@ -227,3 +227,15 @@ Build probes default to one job (`BUILD_JOBS` overrides this).
 The native release workflow selects an installed Xcode with macOS SDK 26 or later.
 A runner without that SDK fails explicitly; local packaging does not verify GitHub
 Actions, Intel builds, or non-macOS platform behavior.
+
+## Refresh only the macOS release
+
+The GitHub Actions **Release** workflow accepts a `platform` input. To replace
+only the macOS archive on an existing release, select `macos`, enter the existing
+version without `v` (for example `1.3.3`), and keep `publish` enabled. Linux and
+Windows jobs are skipped; their release assets and the existing tag stay intact.
+The macOS download keeps the name `citron-<version>-macos-arm64.zip`, while the
+archive contains the native `Citrosis.app`.
+
+`CITROSIS_MACOS_VERSION` supplies both native bundle version fields. The macOS
+job builds and signs the app before replacing the release asset.
