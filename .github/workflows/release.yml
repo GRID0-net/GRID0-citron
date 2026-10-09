@@ -44,7 +44,7 @@ jobs:
       # the tools setup installed.
       - name: Install the toolchain and build
         run: |
-          docker run --rm --init -e CITRON_IN_ARCH_CONTAINER=1 \
+          docker run --rm --init -e CITRON_IN_ARCH_CONTAINER=1 -e GRID0_RELEASE_VERSION="${VERSION#v}" \
             -v "$PWD:/workspace" -w /workspace \
             ghcr.io/pkgforge-dev/archlinux@sha256:f6fc7e14b0612a355d7ab50efb3cc40010ba28e4766860bd238d313b308f190b \
             bash -c './build-citron-linux.sh setup --inside-arch-container && ./build-citron-linux.sh use --inside-arch-container --pgo none --lto thin --jobs "$(nproc)"'
@@ -72,7 +72,7 @@ jobs:
       - name: Install the toolchain and dependencies
         run: ./build-clangtron-windows.sh setup
       - name: Build
-        run: ./build-clangtron-windows.sh use --pgo-type none --lto thin --jobs "$(nproc)"
+        run: GRID0_RELEASE_VERSION="${VERSION#v}" ./build-clangtron-windows.sh use --pgo-type none --lto thin --jobs "$(nproc)"
       - name: Collect
         run: |
           set -euo pipefail

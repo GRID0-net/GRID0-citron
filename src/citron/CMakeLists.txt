@@ -246,6 +246,8 @@ add_executable(citron
     multiplayer/host_room.ui
     grid0_friends_dialog.cpp
     grid0_friends_dialog.h
+    grid0_update_check.cpp
+    grid0_update_check.h
     multiplayer/lobby.cpp
     multiplayer/lobby.h
     multiplayer/lobby.ui
@@ -746,3 +748,8 @@ if (CITRON_USE_PRECOMPILED_HEADERS)
 endif()
 
 create_target_directory_groups(citron)
+
+# The release version the boot-time update check compares against GRID0-net's releases.
+# Empty (a local build) turns the check off. The release workflow sets the environment variable.
+set(GRID0_RELEASE_VERSION "$ENV{GRID0_RELEASE_VERSION}" CACHE STRING "GRID0-citron release version, e.g. 1.3.4")
+target_compile_definitions(citron PRIVATE GRID0_RELEASE_VERSION="${GRID0_RELEASE_VERSION}")

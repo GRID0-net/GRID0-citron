@@ -158,6 +158,7 @@ static FileSys::VirtualFile VfsDirectoryCreateFileWrapper(const FileSys::Virtual
 #include "citron/loading_screen.h"
 #include "citron/main.h"
 #include "citron/grid0_friends_dialog.h"
+#include "citron/grid0_update_check.h"
 #ifdef CITROSIS_SWIFT_UI
 #include "citron/macos/native_toolbar.h"
 #endif
@@ -496,6 +497,9 @@ GMainWindow::GMainWindow(std::unique_ptr<QtConfig> config_, bool has_broken_vulk
 
     // Process events to ensure main window is fully rendered
     QApplication::processEvents();
+
+    // Asynchronous: the window stays usable while GitHub answers, and a failure is only logged.
+    Grid0::CheckForUpdateOnBoot(this);
 
     if (has_broken_vulkan) {
         UISettings::values.has_broken_vulkan = true;
