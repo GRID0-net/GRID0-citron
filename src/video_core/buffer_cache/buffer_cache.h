@@ -11,6 +11,7 @@
 
 #include "common/range_sets.inc"
 #include "video_core/buffer_cache/buffer_cache_base.h"
+#include "video_core/citrosis_diag.h"
 #include "video_core/guest_memory.h"
 #include "video_core/host1x/gpu_device_memory_manager.h"
 
@@ -98,7 +99,7 @@ void BufferCache<P>::TickFrame() {
 
     const u64 gc_memory_usage =
         runtime.CanReportMemoryUsage() ? runtime.GetDeviceMemoryUsage() : total_used_memory;
-    if (gc_memory_usage >= minimum_memory) {
+    if (gc_memory_usage >= minimum_memory && !CitrosisDiag::BufferGcDisabled()) {
         RunGarbageCollector();
     }
     ++frame_tick;
