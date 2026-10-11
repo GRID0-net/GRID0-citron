@@ -42,6 +42,9 @@ import UniformTypeIdentifiers
 @_silgen_name("citrosis_operation_prepare") func operationPrepare()
 @_silgen_name("citrosis_operation_cancel") func operationCancel()
 @_silgen_name("citrosis_operation_progress") func operationProgress() -> Double
+@_silgen_name("citrosis_system_status") func systemStatusJSON() -> UnsafePointer<CChar>
+@_silgen_name("citrosis_install_keys") func installKeysAt(_ path:UnsafePointer<CChar>) -> UnsafePointer<CChar>
+@_silgen_name("citrosis_install_firmware") func installFirmwareFrom(_ folder:UnsafePointer<CChar>) -> UnsafePointer<CChar>
 @_silgen_name("citrosis_input_clear") func inputClear(_ player:Int32) -> Bool
 @_silgen_name("citrosis_stick_options") func stickOptions(_ player:Int32,_ index:Int32,_ deadzone:Double,_ range:Double) -> Bool
 @_silgen_name("citrosis_input_profiles") func inputProfilesJSON() -> UnsafePointer<CChar>
@@ -50,6 +53,7 @@ import UniformTypeIdentifiers
 @_silgen_name("citrosis_game_setting") func gameSetting(_ id:UnsafePointer<CChar>,_ key:UnsafePointer<CChar>,_ value:UnsafePointer<CChar>,_ inherit:Bool) -> Bool
 struct GameSetting:Codable,Identifiable {var setting:CoreSetting; let inherit:Bool; var id:String {setting.id}}
 struct ContentResult:Codable {let error:String?; let message:String?; let path:String?}
+struct SystemStatus:Codable {let keys:Bool; let firmware:Bool; let firmware_version:String}
 struct InputDevice:Codable,Identifiable {let id:String; let name:String}
 struct InputDirection:Codable,Identifiable {let id:String; let value:String}
 struct InputBinding:Codable,Identifiable {
@@ -141,6 +145,7 @@ private let network = DispatchQueue(label:"org.citrosis.grid0", qos:.userInitiat
  var propertyWindow:NSWindow?
  @Published var contentCanCancel=true
  @Published var contentBusy=false
+ @Published var systemStatus:SystemStatus?
  @Published var contentLabel=""
  @Published var contentProgress:Double=0
  var mappingDeadline:Double=0
@@ -175,6 +180,12 @@ private let network = DispatchQueue(label:"org.citrosis.grid0", qos:.userInitiat
      if result != 0 { model.error="Emulation stopped with error \(result). See the Citrosis log for details." }
    }})
   scan()
+  refreshSystemStatus()
+  if let status=systemStatus, !status.keys {
+   error="Decryption keys are not installed, so games cannot be decrypted. Use Tools ▸ Install Decryption Keys… with your prod.keys, then Tools ▸ Install Firmware."
+  } else if let status=systemStatus, !status.firmware {
+   error="No firmware is installed. Some games and online services (such as GRID0+) need it. Use Tools ▸ Install Firmware."
+  }
   let timer=Timer(timeInterval:1.0/60.0,repeats:true) {_ in
    pumpInput()
    if self.contentBusy {self.contentProgress=operationProgress()}
@@ -355,6 +366,72 @@ private let network = DispatchQueue(label:"org.citrosis.grid0", qos:.userInitiat
     messages.append(result?.message ?? "Operation finished."); output=result?.path
    }
    DispatchQueue.main.async {self.contentBusy=false; self.error=messages.joined(separator:"\n"); if let output {NSWorkspace.shared.open(URL(fileURLWithPath:output))}; self.scan()}
+  }
+ }
+ func refreshSystemStatus() {systemStatus=decode(SystemStatus.self,systemStatusJSON())}
+ var systemStatusLabel:String {
+  guard let status=systemStatus else {return "Keys and firmware: unknown"}
+  let keys=status.keys ? "Keys installed":"No keys"
+  let firmware=status.firmware ? (status.firmware_version.isEmpty ? "Firmware installed":"Firmware \(status.firmware_version)"):"No firmware"
+  return "\(keys) · \(firmware)"
+ }
+ func installKeys() {
+  guard playing == nil, !contentBusy else {return}
+  let panel=NSOpenPanel(); panel.title="Select prod.keys"; panel.message="Choose prod.keys. title.keys and key_retail.bin in the same folder are installed too."
+  panel.allowsOtherFileTypes=true; panel.canChooseDirectories=false; panel.allowsMultipleSelection=false
+  panel.begin {response in
+   guard response == .OK, let url=panel.url else {return}
+   self.contentCanCancel=false; self.contentBusy=true; self.contentProgress=0; self.contentLabel="Installing decryption keys…"
+   operationPrepare()
+   backend.async {
+    let result=url.path.withCString {decode(ContentResult.self,installKeysAt($0))}
+    DispatchQueue.main.async {
+     self.contentBusy=false; self.refreshSystemStatus()
+     self.error=result?.error ?? result?.message ?? "Key installation finished."
+     if result?.error == nil {self.scan()}
+    }
+   }
+  }
+ }
+ func installFirmware(zip:Bool) {
+  guard playing == nil, !contentBusy else {return}
+  if systemStatus?.keys == false {error="Install decryption keys before installing firmware."; return}
+  let panel=NSOpenPanel()
+  if zip {panel.title="Select a Firmware ZIP"; panel.allowedContentTypes=[.zip]; panel.canChooseDirectories=false}
+  else {panel.title="Select a Firmware Folder"; panel.message="Choose a folder containing the firmware’s .nca files."; panel.canChooseDirectories=true; panel.canChooseFiles=false}
+  panel.begin {response in
+   guard response == .OK, let url=panel.url else {return}
+   if self.systemStatus?.firmware == true {
+    let alert=NSAlert(); alert.messageText="Replace the installed firmware?"
+    alert.informativeText="The current firmware (\(self.systemStatus?.firmware_version ?? "")) will be removed from NAND and replaced. Games, saves and keys are not affected."
+    alert.addButton(withTitle:"Replace"); alert.addButton(withTitle:"Cancel")
+    if alert.runModal() != .alertFirstButtonReturn {return}
+   }
+   self.contentBusy=true; self.contentProgress=0; operationPrepare()
+   self.contentCanCancel = !zip; self.contentLabel=zip ? "Extracting firmware ZIP…":"Installing firmware…"
+   backend.async {
+    var folder=url; var temporary:URL?
+    if zip {
+     let target=FileManager.default.temporaryDirectory.appendingPathComponent("citrosis-firmware-\(UUID().uuidString)")
+     temporary=target
+     let task=Process(); task.executableURL=URL(fileURLWithPath:"/usr/bin/ditto"); task.arguments=["-x","-k",url.path,target.path]
+     var extracted=false
+     do {try task.run(); task.waitUntilExit(); extracted=task.terminationStatus == 0} catch {}
+     if !extracted {
+      try? FileManager.default.removeItem(at:target)
+      DispatchQueue.main.async {self.contentBusy=false; self.error="The firmware ZIP could not be extracted. Make sure it is a valid ZIP archive."}
+      return
+     }
+     folder=target
+     DispatchQueue.main.async {self.contentCanCancel=true; self.contentLabel="Installing firmware…"}
+    }
+    let result=folder.path.withCString {decode(ContentResult.self,installFirmwareFrom($0))}
+    if let temporary {try? FileManager.default.removeItem(at:temporary)}
+    DispatchQueue.main.async {
+     self.contentBusy=false; self.refreshSystemStatus()
+     self.error=result?.error ?? result?.message ?? "Firmware installation finished."
+    }
+   }
   }
  }
  func installContent() {
@@ -976,6 +1053,13 @@ final class AppDelegate:NSObject,NSApplicationDelegate {
      Button("Stop",action:model.stop).disabled(model.playing == nil)
     }
     CommandMenu("Tools") {
+     Button("Install Decryption Keys…",action:model.installKeys).disabled(model.playing != nil || model.contentBusy)
+     Menu("Install Firmware") {
+      Button("From ZIP File…") {model.installFirmware(zip:true)}
+      Button("From Folder…") {model.installFirmware(zip:false)}
+     }.disabled(model.playing != nil || model.contentBusy || model.systemStatus?.keys == false)
+     Text(model.systemStatusLabel)
+     Divider()
      Button("Open Citrosis Data Folder…") {model.reveal("data")}
      Button("Open Keys Folder…") {model.reveal("keys")}
      Button("Open Shader Folder…") {model.reveal("shaders")}

@@ -6,6 +6,11 @@
 #include <atomic>
 #include <set>
 #include "frontend_common/content_manager.h"
+#include "common/fs/fs.h"
+#include "core/crypto/key_manager.h"
+#include "core/file_sys/registered_cache.h"
+#include "core/file_sys/vfs/vfs.h"
+#include "core/hle/service/set/system_settings_server.h"
 #include "core/file_sys/savedata_factory.h"
 #include "core/file_sys/card_image.h"
 #include "core/file_sys/submission_package.h"
@@ -113,10 +118,11 @@ std::unique_ptr<NativeConfig> config;
 std::mutex config_mutex;
 void ApplyNativeLogFilter() {
  Common::Log::Filter filter;
- auto effective=Settings::values.log_filter.GetValue();
  const bool diagnostic=config && config->network_logging;
- if(diagnostic) effective+=" Network:Debug Service.ACC:Debug Service.SSL:Debug Service.NIFM:Debug Service.BCAT:Debug";
- filter.ParseFilterString(effective);
+ // Kept as a suffix: System::ApplySettings rebuilds the filter from log_filter during launch,
+ // which used to drop these and leave network logging with nothing but the trace.
+ Common::Log::SetFilterSuffix(diagnostic ? "Network:Debug Service:Info Service.ACC:Debug Service.SSL:Debug Service.NIFM:Debug Service.BCAT:Debug Service.Friend:Debug" : "");
+ filter.ParseFilterString(Settings::values.log_filter.GetValue()+' '+Common::Log::GetFilterSuffix());
  Service::Sockets::SetPrivateServerTraceEnabled(diagnostic);
  Common::Log::SetGlobalFilter(filter);
 }
@@ -666,6 +672,95 @@ bool citrosis_mapping_clear(int player,const char* kind,int index,const char* co
  }
  config->SaveAllValues(); return true;
 }
+// Keys and firmware: what the Qt frontend offered under Tools, for the native app.
+const char* citrosis_system_status() {
+ try {
+  auto& system=IOS::EmulationSession::GetInstance().System();
+  constexpr u64 FirmwareVersionDataId=0x0100000000000809;
+  const auto* bis=system.GetFileSystemController().GetSystemNANDContents();
+  const bool firmware=bis && bis->HasEntry(FirmwareVersionDataId,FileSys::ContentRecordType::Data);
+  std::string version;
+  if(firmware && ContentManager::AreKeysPresent()) {
+   Service::Set::FirmwareVersionFormat format{};
+   if(Service::Set::GetFirmwareVersionImpl(format,system,Service::Set::GetFirmwareVersionType::Version2).IsSuccess())
+    version=Common::StringFromFixedZeroTerminatedBuffer(format.display_version.data(),format.display_version.size());
+  }
+  return Reply({{"keys",ContentManager::AreKeysPresent()},{"firmware",firmware},{"firmware_version",version}});
+ } catch(const std::exception& e) {return Reply({{"error",e.what()}});}
+}
+const char* citrosis_install_keys(const char* prod_keys) {
+ try {
+  if(IOS::EmulationSession::GetInstance().IsRunning()) return Reply({{"error","Stop emulation before installing keys."}});
+  const std::filesystem::path prod=prod_keys;
+  if(prod.filename()!="prod.keys" || !std::filesystem::is_regular_file(prod))
+   return Reply({{"error","Choose your prod.keys file. title.keys and key_retail.bin next to it are installed too."}});
+  std::vector<std::filesystem::path> files{prod};
+  for(const auto* extra:{"title.keys","key_retail.bin"})
+   if(std::filesystem::is_regular_file(prod.parent_path()/extra)) files.push_back(prod.parent_path()/extra);
+  const auto keys_dir=Common::FS::GetCitronPath(Common::FS::CitronPath::KeysDir);
+  std::filesystem::create_directories(keys_dir);
+  std::vector<std::string> installed;
+  for(const auto& file:files) {
+   std::error_code ec;
+   std::filesystem::copy_file(file,keys_dir/file.filename(),std::filesystem::copy_options::overwrite_existing,ec);
+   if(ec) return Reply({{"error",fmt::format("Could not copy {}: {}",file.filename().string(),ec.message())}});
+   installed.push_back(file.filename().string());
+  }
+  Core::Crypto::KeyManager::Instance().ReloadKeys();
+  auto& system=IOS::EmulationSession::GetInstance().System();
+  system.GetFileSystemController().InitializeContentSystem(*system.GetFilesystem());
+  if(!ContentManager::AreKeysPresent())
+   return Reply({{"error","The keys were copied but could not derive the keys games need. Re-dump them with an up-to-date tool."}});
+  LOG_INFO(Frontend,"Installed decryption keys: {}",fmt::join(installed,", "));
+  return Reply({{"message",fmt::format("Decryption keys installed ({}).",fmt::join(installed,", "))}});
+ } catch(const std::exception& e) {return Reply({{"error",e.what()}});}
+}
+// Installs every .nca under `folder` (searched recursively, so an extracted ZIP with a top-level
+// directory works) as the system firmware, replacing what is in nand/system/Content/registered.
+const char* citrosis_install_firmware(const char* folder) {
+ try {
+  auto& session=IOS::EmulationSession::GetInstance();
+  if(session.IsRunning()) return Reply({{"error","Stop emulation before installing firmware."}});
+  if(!ContentManager::AreKeysPresent()) return Reply({{"error","Install decryption keys before installing firmware."}});
+  const std::filesystem::path source=folder;
+  if(!std::filesystem::is_directory(source)) return Reply({{"error","The firmware folder could not be opened."}});
+  std::vector<std::filesystem::path> ncas;
+  Common::FS::IterateDirEntriesRecursively(source,[&ncas](const std::filesystem::directory_entry& entry){
+   const auto name=entry.path().filename().string();
+   if(!name.starts_with("._") && Common::ToLower(entry.path().extension().string())==".nca") ncas.push_back(entry.path());
+   return true;
+  },Common::FS::DirEntryFilter::File);
+  if(ncas.empty()) return Reply({{"error","No firmware NCA files were found. Choose a firmware dump folder or ZIP containing .nca files."}});
+  auto& system=session.System(); auto vfs=system.GetFilesystem();
+  auto content=system.GetFileSystemController().GetSystemNANDContentDirectory();
+  if(!content || !content->CleanSubdirectoryRecursive("registered")) return Reply({{"error","The old firmware files could not be removed."}});
+  auto registered=content->GetDirectoryRelative("registered");
+  if(!registered) registered=content->CreateDirectoryRelative("registered");
+  if(!registered) return Reply({{"error","nand/system/Content/registered could not be created."}});
+  size_t done=0; std::vector<std::string> failed;
+  for(const auto& nca:ncas) {
+   if(operation_cancel) return Reply({{"error","Firmware installation cancelled; the firmware is incomplete. Install it again."}});
+   auto in=vfs->OpenFile(nca.generic_string(),FileSys::OpenMode::Read);
+   auto out=registered->CreateFileRelative(nca.filename().string());
+   if(!in || !out || !FileSys::VfsRawCopy(in,out,0x100000)) failed.push_back(nca.filename().string());
+   operation_progress=0.85*static_cast<double>(++done)/ncas.size();
+  }
+  if(!failed.empty()) return Reply({{"error",fmt::format("{} firmware file(s) failed to copy: {}",failed.size(),fmt::join(failed,", "))}});
+  system.GetFileSystemController().InitializeContentSystem(*vfs);
+  FileSys::ManualContentProvider provider;
+  const auto broken=ContentManager::VerifyInstalledContents(system,provider,[](size_t total,size_t processed){
+   operation_progress=0.85+(total?0.15*static_cast<double>(processed)/total:0.15); return operation_cancel.load();},true);
+  if(operation_cancel) return Reply({{"error","Verification cancelled. The firmware files were installed but not verified."}});
+  if(!broken.empty()) return Reply({{"error",fmt::format("Firmware verification failed for:\n{}",fmt::join(broken,"\n"))}});
+  operation_progress=1.0;
+  Service::Set::FirmwareVersionFormat format{}; std::string version;
+  if(Service::Set::GetFirmwareVersionImpl(format,system,Service::Set::GetFirmwareVersionType::Version2).IsSuccess())
+   version=Common::StringFromFixedZeroTerminatedBuffer(format.display_version.data(),format.display_version.size());
+  LOG_INFO(Frontend,"Installed firmware {} ({} NCAs) from {}",version,ncas.size(),source.string());
+  return Reply({{"message",version.empty()?fmt::format("Firmware installed ({} files).",ncas.size()):fmt::format("Firmware {} installed ({} files).",version,ncas.size())}});
+ } catch(const std::exception& e) {return Reply({{"error",e.what()}});}
+}
+
 const char* citrosis_renderer() {
  switch(Settings::values.renderer_backend.GetValue()) {
  case Settings::RendererBackend::Metal: return "Metal";
