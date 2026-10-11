@@ -144,7 +144,7 @@ void RendererMetal::Composite(std::span<const Tegra::FramebufferConfig> framebuf
                 auto& slot = presents[present_index];
                 const auto wait_start = std::chrono::steady_clock::now();
                 if (slot)
-                    slot.Wait();
+                    WaitTolerant(slot);
                 rasterizer.AddPresentWait(
                     static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
                                          std::chrono::steady_clock::now() - wait_start)

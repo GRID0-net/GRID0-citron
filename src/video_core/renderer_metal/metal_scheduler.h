@@ -23,6 +23,14 @@ struct StreamAllocation {
     std::span<std::byte> mapped;
 };
 
+/// Waits for a submission. A command buffer the GPU failed (timeout, page fault, invalid
+/// resource) is logged and treated as complete instead of throwing: callers on the fence and
+/// present paths run on threads where an exception would abort the whole emulator, and the
+/// failed work is already lost either way. Returns false if the submission failed.
+bool WaitTolerant(const Submission& submission) noexcept;
+/// IsComplete with the same fault handling.
+bool IsCompleteTolerant(const Submission& submission) noexcept;
+
 class Scheduler {
 public:
     explicit Scheduler(Runtime& runtime_) : runtime{runtime_}, kernels{runtime_} {}

@@ -18,11 +18,11 @@ public:
             submission = scheduler.Flush();
     }
     bool IsSignaled() const {
-        return is_stubbed || !submission || submission.IsComplete();
+        return is_stubbed || !submission || IsCompleteTolerant(submission);
     }
     void Wait() {
         if (!is_stubbed && submission)
-            submission.Wait();
+            WaitTolerant(submission);
     }
 
 private:

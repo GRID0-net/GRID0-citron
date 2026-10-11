@@ -23,8 +23,12 @@ namespace NativeMetal {
 ///
 /// Pipelines are recorded in a per-title transferable cache (`metal.bin`, the same guest
 /// environment format the Vulkan backend uses, with Metal keys) and rebuilt in parallel at
-/// boot. With asynchronous shaders enabled, MSL compilation of new pipelines runs on worker
-/// threads and draws using them are skipped until they are ready.
+/// boot. With asynchronous shaders enabled, MSL compilation of new pipelines and Metal render
+/// pipeline states (one per framebuffer format combination) run on worker threads, and draws
+/// using them are skipped until they are ready. The framebuffer format combinations each
+/// pipeline was drawn with are remembered in `metal_variants.bin` and prebuilt at boot, so
+/// revisited scenes do not compile on the GPU thread. Compute pipelines build synchronously
+/// unless CITROSIS_METAL_ASYNC_COMPUTE=1 (skipped dispatches can lose game state).
 /// Geometry and tessellation stages are not emulated yet: such pipelines are skipped.
 class PipelineCache : public VideoCommon::ShaderCache {
 public:
@@ -59,6 +63,10 @@ private:
         std::atomic<bool> ready{};
         std::unique_ptr<GraphicsPipeline> pipeline;
     };
+    struct ComputeEntry {
+        std::atomic<bool> ready{};
+        std::unique_ptr<ComputePipeline> pipeline;
+    };
 
     /// Maxwell → MSL for every stage of a graphics pipeline. Reads guest code through the
     /// environments, so runtime calls must happen on the GPU thread.
@@ -68,24 +76,38 @@ private:
     /// Compiles translated stages into Metal functions (thread-safe).
     std::unique_ptr<GraphicsPipeline> BuildGraphics(const GraphicsPipelineKey& key,
                                                     TranslatedStages stages);
-    std::unique_ptr<ComputePipeline> BuildCompute(ShaderPools& pools, const ComputePipelineKey& key,
-                                                  Shader::Environment& env);
+    /// Maxwell → MSL for a compute shader (reads guest code: GPU thread or disk environments).
+    std::optional<TranslatedStage> TranslateCompute(ShaderPools& pools, const ComputePipelineKey& key,
+                                                    Shader::Environment& env);
+    /// Compiles a translated compute stage (thread-safe).
+    std::unique_ptr<ComputePipeline> BuildCompute(const ComputePipelineKey& key,
+                                                  TranslatedStage translated);
     void CreateGraphicsPipeline(GraphicsEntry& entry);
+
+    /// Installs the variant hooks and prebuilds the recorded framebuffer variants.
+    void AttachVariants(GraphicsPipeline& pipeline, const GraphicsPipelineKey& key);
+    void LoadRecordedVariants();
+    void RecordVariant(const GraphicsPipelineKey& key, const FramebufferFormats& formats);
 
     PipelineContext ctx;
     Shader::HostTranslateInfo host_info;
     Vulkan::DynamicFeatures dynamic_features{};
     bool use_asynchronous_shaders{};
+    bool use_asynchronous_compute{};
+    VariantHooks variant_hooks;
 
     GraphicsPipelineKey graphics_key{};
     GraphicsEntry* current_entry{};
     GraphicsPipelineKey current_key{};
     std::mutex cache_mutex; // graphics_cache/compute_cache structure (disk loading inserts)
     std::unordered_map<GraphicsPipelineKey, std::unique_ptr<GraphicsEntry>> graphics_cache;
-    std::unordered_map<ComputePipelineKey, std::unique_ptr<ComputePipeline>> compute_cache;
+    std::unordered_map<ComputePipelineKey, std::unique_ptr<ComputeEntry>> compute_cache;
     ShaderPools main_pools;
 
     std::filesystem::path pipeline_cache_filename;
+    std::filesystem::path variants_filename;
+    // Written only by LoadDiskResources before any pipeline is built; read-only afterwards.
+    std::unordered_multimap<u64, FramebufferFormats> recorded_variants;
     Common::ThreadWorker workers;
     Common::ThreadWorker serialization_thread;
 };

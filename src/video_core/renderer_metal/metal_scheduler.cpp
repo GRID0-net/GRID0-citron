@@ -1,10 +1,39 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include "common/alignment.h"
 #include "common/logging.h"
 #include "video_core/renderer_metal/metal_scheduler.h"
 namespace NativeMetal {
+namespace {
+void ReportGpuFault(const std::exception& error) noexcept {
+    static std::atomic<u32> count{};
+    const u32 n = count.fetch_add(1, std::memory_order_relaxed);
+    if (n < 32 || (n & (n - 1)) == 0)
+        LOG_ERROR(Render, "Metal GPU work failed and was dropped: {} (#{})", error.what(), n + 1);
+}
+} // namespace
+
+bool WaitTolerant(const Submission& submission) noexcept {
+    try {
+        submission.Wait();
+        return true;
+    } catch (const std::exception& error) {
+        ReportGpuFault(error);
+        return false;
+    }
+}
+
+bool IsCompleteTolerant(const Submission& submission) noexcept {
+    try {
+        return submission.IsComplete();
+    } catch (const std::exception& error) {
+        ReportGpuFault(error);
+        return true; // failed work is finished work
+    }
+}
+
 Scheduler::~Scheduler() {
     // Explicit Finish reports GPU faults. Destruction cancels pending work;
     // committed command buffers retain their own resources until completion.
@@ -35,7 +64,7 @@ void Scheduler::Finish() {
     if (!submission)
         return;
     const auto start = std::chrono::steady_clock::now();
-    submission.Wait();
+    WaitTolerant(submission);
     ++stats.finishes;
     stats.finish_ns += static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
                                             std::chrono::steady_clock::now() - start)

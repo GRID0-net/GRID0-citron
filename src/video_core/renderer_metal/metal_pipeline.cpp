@@ -185,17 +185,28 @@ u32 ReadHandleIndex(Tegra::MemoryManager& gpu_memory, GPUVAddr base, GPUVAddr se
     return out.first;
 }
 
-u64 FramebufferSignature(const CacheFramebuffer& framebuffer) {
-    u64 signature = framebuffer.NumColorBuffers();
+} // namespace
+
+FramebufferFormats FramebufferFormats::Of(const CacheFramebuffer& framebuffer) {
+    FramebufferFormats formats;
+    formats.color_count = framebuffer.NumColorBuffers();
     for (u32 i = 0; i < VideoCommon::NUM_RT; ++i) {
         const auto& color = framebuffer.Colors()[i];
-        const u64 format = color.Valid() ? static_cast<u64>(color.Format()) : 0;
-        signature = signature * 131 + format;
+        formats.colors[i] = color.Valid() ? color.Format() : PixelFormat::Invalid;
     }
-    const u64 depth = framebuffer.HasDepth() ? static_cast<u64>(framebuffer.Depth().Format()) : 0;
-    return signature * 131 + depth;
+    formats.depth = framebuffer.HasDepth() ? framebuffer.Depth().Format() : PixelFormat::Invalid;
+    return formats;
 }
-} // namespace
+
+u64 FramebufferFormats::Signature() const noexcept {
+    const auto value = [](PixelFormat format) -> u64 {
+        return format == PixelFormat::Invalid ? 0 : static_cast<u64>(format) + 1;
+    };
+    u64 signature = color_count;
+    for (const PixelFormat format : colors)
+        signature = signature * 131 + value(format);
+    return signature * 131 + value(depth);
+}
 
 size_t GraphicsPipelineKey::Hash() const noexcept {
     return static_cast<size_t>(
@@ -415,23 +426,17 @@ bool GraphicsPipeline::BuildVertexInput(RenderPipelineDesc& desc) const {
     return true;
 }
 
-const Pipeline* GraphicsPipeline::Variant(const CacheFramebuffer& framebuffer) {
-    const u64 signature = FramebufferSignature(framebuffer);
-    if (const auto it = variants.find(signature); it != variants.end())
-        return it->second.Valid() ? &it->second : nullptr;
-    auto& slot = variants[signature];
+Pipeline GraphicsPipeline::BuildVariant(const FramebufferFormats& formats) {
     try {
         RenderPipelineDesc desc;
         if (stages[0])
             desc.vertex = stages[0]->function;
         if (stages[4])
             desc.fragment = stages[4]->function;
-        desc.color_count = framebuffer.NumColorBuffers();
-        for (u32 i = 0; i < desc.color_count; ++i) {
-            const auto& color = framebuffer.Colors()[i];
-            desc.colors[i] = color.Valid() ? color.Format() : PixelFormat::Invalid;
-        }
-        desc.depth = framebuffer.HasDepth() ? framebuffer.Depth().Format() : PixelFormat::Invalid;
+        desc.color_count = std::min<u32>(formats.color_count, VideoCommon::NUM_RT);
+        for (u32 i = 0; i < desc.color_count; ++i)
+            desc.colors[i] = formats.colors[i];
+        desc.depth = formats.depth;
         desc.use_blend_states = true;
         for (u32 i = 0; i < desc.color_count; ++i) {
             const auto& attachment = key.state.attachments[i];
@@ -454,18 +459,62 @@ const Pipeline* GraphicsPipeline::Variant(const CacheFramebuffer& framebuffer) {
         desc.rasterization_enabled = key.state.dynamic_state.rasterize_enable != 0;
         desc.input_topology = ConvertInputTopology(key.state.topology);
         if (!BuildVertexInput(desc)) {
-            failed = true;
-            return nullptr;
+            failed.store(true, std::memory_order_relaxed);
+            return {};
         }
         if (key.state.dynamic_state.logic_op_enable != 0) {
             LOG_WARNING(Render, "Metal has no framebuffer logic ops; ignoring");
         }
-        slot = ctx.metal.CreateRenderPipeline(desc);
+        return ctx.metal.CreateRenderPipeline(desc);
     } catch (const std::exception& error) {
         LOG_ERROR(Render, "Metal graphics pipeline {:016x} failed: {}", key.Hash(), error.what());
-        slot = {};
+        return {};
     }
-    return slot.Valid() ? &slot : nullptr;
+}
+
+void GraphicsPipeline::Prewarm(const FramebufferFormats& formats) {
+    if (failed.load(std::memory_order_relaxed))
+        return;
+    VariantSlot* slot;
+    {
+        std::scoped_lock lock{variants_mutex};
+        auto [it, is_new] = variants.try_emplace(formats.Signature());
+        if (!is_new)
+            return;
+        it->second = std::make_unique<VariantSlot>();
+        slot = it->second.get();
+    }
+    slot->Finish(BuildVariant(formats));
+}
+
+const Pipeline* GraphicsPipeline::Variant(const CacheFramebuffer& framebuffer) {
+    const FramebufferFormats formats = FramebufferFormats::Of(framebuffer);
+    const u64 signature = formats.Signature();
+    if (last_variant && last_signature == signature)
+        return last_variant->Get();
+    VariantSlot* slot;
+    bool is_new;
+    {
+        std::scoped_lock lock{variants_mutex};
+        auto [it, inserted] = variants.try_emplace(signature);
+        if (inserted)
+            it->second = std::make_unique<VariantSlot>();
+        slot = it->second.get();
+        is_new = inserted;
+    }
+    last_signature = signature;
+    last_variant = slot;
+    if (is_new) {
+        if (variant_hooks && variant_hooks->record)
+            variant_hooks->record(key, formats);
+        if (variant_hooks && variant_hooks->queue) {
+            // Compile on a worker; draws with this framebuffer are skipped until it is ready.
+            variant_hooks->queue([this, slot, formats] { slot->Finish(BuildVariant(formats)); });
+        } else {
+            slot->Finish(BuildVariant(formats));
+        }
+    }
+    return slot->Get();
 }
 
 DepthStencilDesc GraphicsPipeline::MakeDepthStencil(bool has_depth, bool has_stencil) const {
@@ -497,7 +546,7 @@ DepthStencilDesc GraphicsPipeline::MakeDepthStencil(bool has_depth, bool has_ste
 }
 
 bool GraphicsPipeline::Bind(Commands& commands, const CacheFramebuffer& framebuffer) {
-    if (failed)
+    if (failed.load(std::memory_order_relaxed))
         return false;
     const Pipeline* const pipeline = Variant(framebuffer);
     if (!pipeline)

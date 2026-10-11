@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 #include <array>
+#include <atomic>
+#include <functional>
 #include <memory>
+#include <mutex>
 #include <unordered_map>
 #include <vector>
 #include "video_core/engines/maxwell_3d.h"
@@ -69,6 +72,26 @@ struct PipelineContext {
     ResourceBinder& binder;
 };
 
+/// Host attachment formats of a framebuffer: what a Metal render pipeline state is
+/// specialized on beyond the guest pipeline key.
+struct FramebufferFormats {
+    u32 color_count{};
+    std::array<PixelFormat, VideoCommon::NUM_RT> colors{};
+    PixelFormat depth{PixelFormat::Invalid};
+
+    static FramebufferFormats Of(const CacheFramebuffer& framebuffer);
+    u64 Signature() const noexcept;
+};
+
+/// Hooks a GraphicsPipeline uses to build framebuffer variants off the GPU thread and to
+/// remember them for the next boot. Owned by the PipelineCache, which outlives pipelines.
+struct VariantHooks {
+    /// Runs a build on a worker. Empty: variants are built synchronously on first use.
+    std::function<void(std::function<void()>)> queue;
+    /// Called once per new variant seen at draw time (GPU thread).
+    std::function<void(const GraphicsPipelineKey&, const FramebufferFormats&)> record;
+};
+
 class GraphicsPipeline {
 public:
     static constexpr size_t NUM_STAGES = Tegra::Engines::Maxwell3D::Regs::MaxShaderStage;
@@ -98,8 +121,31 @@ public:
         return key;
     }
 
+    void SetVariantHooks(const VariantHooks* hooks) noexcept {
+        variant_hooks = hooks;
+    }
+
+    /// Builds the Metal pipeline state for these attachment formats now (any thread), so the
+    /// first draw with a matching framebuffer does not compile.
+    void Prewarm(const FramebufferFormats& formats);
+
 private:
+    struct VariantSlot {
+        enum : u8 { Building, Ready, Failed };
+        std::atomic<u8> state{Building};
+        Pipeline pipeline;
+
+        const Pipeline* Get() const noexcept {
+            return state.load(std::memory_order_acquire) == Ready ? &pipeline : nullptr;
+        }
+        void Finish(Pipeline built) {
+            pipeline = std::move(built);
+            state.store(pipeline.Valid() ? Ready : Failed, std::memory_order_release);
+        }
+    };
+
     const Pipeline* Variant(const CacheFramebuffer& framebuffer);
+    Pipeline BuildVariant(const FramebufferFormats& formats);
     bool BuildVertexInput(RenderPipelineDesc& desc) const;
     DepthStencilDesc MakeDepthStencil(bool has_depth, bool has_stencil) const;
 
@@ -120,9 +166,14 @@ private:
     std::array<VertexBinding, Maxwell::NumVertexArrays> repacked_vertices{};
     std::array<bool, Maxwell::NumVertexArrays> uses_repacked{};
 
-    std::unordered_map<u64, Pipeline> variants;
+    // Variants may be built on worker threads; slots are stable (never erased).
+    std::mutex variants_mutex;
+    std::unordered_map<u64, std::unique_ptr<VariantSlot>> variants;
+    const VariantHooks* variant_hooks{};
+    u64 last_signature{};
+    VariantSlot* last_variant{}; // GPU thread only
     std::vector<std::pair<DepthStencilDesc, DepthStencilState>> depth_states;
-    bool failed{};
+    std::atomic<bool> failed{};
 };
 
 class ComputePipeline {

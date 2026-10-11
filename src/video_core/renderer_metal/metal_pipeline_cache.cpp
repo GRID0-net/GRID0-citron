@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <algorithm>
+#include <cstdlib>
+#include <unordered_set>
 #include <fstream>
 #include <thread>
 #include <boost/container/static_vector.hpp>
@@ -132,6 +134,23 @@ constexpr u32 METAL_CACHE_VERSION = 1;
 size_t WorkerCount() {
     return std::max<size_t>(std::thread::hardware_concurrency(), 2) - 1;
 }
+
+// metal_variants.bin: header, then fixed-size records appended as variants are first drawn.
+constexpr u32 VARIANTS_MAGIC = 0x56544D43; // "CMTV"
+constexpr u32 VARIANTS_VERSION = 1;
+struct VariantRecord {
+    u64 key_hash;
+    u32 color_count;
+    std::array<u16, VideoCommon::NUM_RT> colors;
+    u16 depth;
+    u16 padding;
+};
+static_assert(sizeof(VariantRecord) == 32);
+
+bool AsyncComputeRequested() {
+    const char* value = std::getenv("CITROSIS_METAL_ASYNC_COMPUTE");
+    return value != nullptr && value[0] == '1';
+}
 } // namespace
 
 PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
@@ -139,7 +158,80 @@ PipelineCache::PipelineCache(Tegra::MaxwellDeviceMemoryManager& device_memory_,
     : VideoCommon::ShaderCache{device_memory_}, ctx{context}, host_info{HostTranslateInfo()},
       use_asynchronous_shaders{Settings::values.use_asynchronous_shaders.GetValue()},
       workers(WorkerCount(), "MetalPipelineBuilder"),
-      serialization_thread(1, "MetalPipelineSerialization") {}
+      serialization_thread(1, "MetalPipelineSerialization") {
+    use_asynchronous_compute = use_asynchronous_shaders && AsyncComputeRequested();
+    if (use_asynchronous_shaders) {
+        variant_hooks.queue = [this](std::function<void()> job) {
+            workers.QueueWork(std::move(job));
+        };
+    }
+    variant_hooks.record = [this](const GraphicsPipelineKey& key,
+                                  const FramebufferFormats& formats) {
+        RecordVariant(key, formats);
+    };
+}
+
+void PipelineCache::AttachVariants(GraphicsPipeline& pipeline, const GraphicsPipelineKey& key) {
+    pipeline.SetVariantHooks(&variant_hooks);
+    const auto [begin, end] = recorded_variants.equal_range(key.Hash());
+    for (auto it = begin; it != end; ++it)
+        pipeline.Prewarm(it->second);
+}
+
+void PipelineCache::LoadRecordedVariants() {
+    recorded_variants.clear();
+    std::ifstream file{variants_filename, std::ios::binary};
+    if (!file.is_open())
+        return;
+    u32 magic{}, version{};
+    file.read(reinterpret_cast<char*>(&magic), sizeof(magic));
+    file.read(reinterpret_cast<char*>(&version), sizeof(version));
+    if (!file || magic != VARIANTS_MAGIC || version != VARIANTS_VERSION) {
+        file.close();
+        LOG_INFO(Render, "Metal: discarding incompatible framebuffer variant cache");
+        std::error_code ec;
+        std::filesystem::remove(variants_filename, ec);
+        return;
+    }
+    std::unordered_set<u64> seen;
+    VariantRecord record{};
+    while (file.read(reinterpret_cast<char*>(&record), sizeof(record))) {
+        FramebufferFormats formats;
+        formats.color_count = std::min<u32>(record.color_count, VideoCommon::NUM_RT);
+        for (size_t i = 0; i < formats.colors.size(); ++i)
+            formats.colors[i] = static_cast<PixelFormat>(record.colors[i]);
+        formats.depth = static_cast<PixelFormat>(record.depth);
+        const u64 identity = record.key_hash * 0x9E3779B97F4A7C15ULL ^ formats.Signature();
+        if (seen.insert(identity).second)
+            recorded_variants.emplace(record.key_hash, formats);
+    }
+    LOG_INFO(Render, "Metal: {} recorded framebuffer variants", recorded_variants.size());
+}
+
+void PipelineCache::RecordVariant(const GraphicsPipelineKey& key,
+                                  const FramebufferFormats& formats) {
+    if (variants_filename.empty())
+        return;
+    VariantRecord record{};
+    record.key_hash = key.Hash();
+    record.color_count = formats.color_count;
+    for (size_t i = 0; i < formats.colors.size(); ++i)
+        record.colors[i] = static_cast<u16>(formats.colors[i]);
+    record.depth = static_cast<u16>(formats.depth);
+    serialization_thread.QueueWork([this, record] {
+        std::error_code ec;
+        const bool fresh = !std::filesystem::exists(variants_filename, ec) ||
+                           std::filesystem::file_size(variants_filename, ec) == 0;
+        std::ofstream file{variants_filename, std::ios::binary | std::ios::app};
+        if (!file.is_open())
+            return;
+        if (fresh) {
+            file.write(reinterpret_cast<const char*>(&VARIANTS_MAGIC), sizeof(VARIANTS_MAGIC));
+            file.write(reinterpret_cast<const char*>(&VARIANTS_VERSION), sizeof(VARIANTS_VERSION));
+        }
+        file.write(reinterpret_cast<const char*>(&record), sizeof(record));
+    });
+}
 
 PipelineCache::~PipelineCache() {
     workers.WaitForRequests();
@@ -215,6 +307,9 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() {
     };
     std::unique_lock lock{cache_mutex};
     const auto [it, is_new] = compute_cache.try_emplace(key);
+    if (is_new)
+        it->second = std::make_unique<ComputeEntry>();
+    ComputeEntry* const entry = it->second.get();
     lock.unlock();
     if (is_new) {
         const GPUVAddr program_base = kepler_compute->regs.code_loc.Address();
@@ -222,19 +317,29 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() {
                                             qmd.program_start};
         env.SetCachedSize(shader->size_bytes);
         main_pools.ReleaseContents();
-        auto pipeline = BuildCompute(main_pools, key, env);
-        if (pipeline && !pipeline_cache_filename.empty()) {
+        auto source = TranslateCompute(main_pools, key, env);
+        if (source && !pipeline_cache_filename.empty()) {
             serialization_thread.QueueWork([this, key, env_ = std::move(env)] {
                 VideoCommon::SerializePipeline(
                     key, std::array<const VideoCommon::GenericEnvironment*, 1>{&env_},
                     pipeline_cache_filename, METAL_CACHE_VERSION);
             });
         }
-        lock.lock();
-        it->second = std::move(pipeline);
-        lock.unlock();
+        if (!source) {
+            entry->ready.store(true, std::memory_order_release);
+        } else if (use_asynchronous_compute) {
+            workers.QueueWork([this, entry, key, stage = std::move(*source)]() mutable {
+                entry->pipeline = BuildCompute(key, std::move(stage));
+                entry->ready.store(true, std::memory_order_release);
+            });
+        } else {
+            entry->pipeline = BuildCompute(key, std::move(*source));
+            entry->ready.store(true, std::memory_order_release);
+        }
     }
-    return it->second && it->second->Valid() ? it->second.get() : nullptr;
+    if (!entry->ready.load(std::memory_order_acquire))
+        return nullptr; // still compiling asynchronously: skip the dispatch
+    return entry->pipeline && entry->pipeline->Valid() ? entry->pipeline.get() : nullptr;
 }
 
 std::optional<PipelineCache::TranslatedStages> PipelineCache::TranslateGraphics(
@@ -313,20 +418,31 @@ std::unique_ptr<GraphicsPipeline> PipelineCache::BuildGraphics(const GraphicsPip
                                                        std::move(translated[index]->source));
     }
     LOG_DEBUG(Render, "Metal: built graphics pipeline {:016x}", key.Hash());
-    return std::make_unique<GraphicsPipeline>(ctx, key, std::move(stages));
+    auto pipeline = std::make_unique<GraphicsPipeline>(ctx, key, std::move(stages));
+    AttachVariants(*pipeline, key);
+    return pipeline;
 } catch (const std::exception& error) {
     LOG_ERROR(Render, "Metal: graphics pipeline {:016x} failed: {}", key.Hash(), error.what());
     return nullptr;
 }
 
-std::unique_ptr<ComputePipeline> PipelineCache::BuildCompute(ShaderPools& pools,
-                                                             const ComputePipelineKey& key,
-                                                             Shader::Environment& env) try {
+std::optional<PipelineCache::TranslatedStage> PipelineCache::TranslateCompute(
+    ShaderPools& pools, const ComputePipelineKey& key, Shader::Environment& env) try {
     Shader::Maxwell::Flow::CFG cfg{env, pools.flow_block, env.StartAddress()};
     auto program = Shader::Maxwell::TranslateProgram(pools.inst, pools.block, env, cfg, host_info);
     Shader::Backend::Bindings bindings;
     auto source = EmitGuestShader(program, {}, bindings);
-    auto stage = std::make_unique<StageProgram>(ctx.metal, program.info, std::move(source));
+    return TranslatedStage{program.info, std::move(source)};
+} catch (const std::exception& error) {
+    LOG_ERROR(Render, "Metal: compute pipeline {:016x} translation failed: {}", key.unique_hash,
+              error.what());
+    return std::nullopt;
+}
+
+std::unique_ptr<ComputePipeline> PipelineCache::BuildCompute(const ComputePipelineKey& key,
+                                                             TranslatedStage translated) try {
+    auto stage = std::make_unique<StageProgram>(ctx.metal, std::move(translated.info),
+                                                std::move(translated.source));
     LOG_DEBUG(Render, "Metal: built compute pipeline {:016x}", key.unique_hash);
     return std::make_unique<ComputePipeline>(ctx, std::move(stage));
 } catch (const std::exception& error) {
@@ -345,6 +461,8 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
         return;
     }
     pipeline_cache_filename = base_dir / "metal.bin";
+    variants_filename = base_dir / "metal_variants.bin";
+    LoadRecordedVariants();
 
     struct {
         std::mutex mutex;
@@ -359,10 +477,12 @@ void PipelineCache::LoadDiskResources(u64 title_id, std::stop_token stop_loading
             return;
         workers.QueueWork([this, key, env_ = std::move(env), &state, &callback]() mutable {
             ShaderPools pools;
-            auto pipeline = BuildCompute(pools, key, env_);
+            auto entry = std::make_unique<ComputeEntry>();
+            if (auto source = TranslateCompute(pools, key, env_))
+                entry->pipeline = BuildCompute(key, std::move(*source));
+            entry->ready.store(true, std::memory_order_release);
             std::scoped_lock lock{state.mutex, cache_mutex};
-            if (pipeline)
-                compute_cache.emplace(key, std::move(pipeline));
+            compute_cache.try_emplace(key, std::move(entry));
             ++state.built;
             if (state.has_loaded)
                 callback(VideoCore::LoadCallbackStage::Build, state.built, state.total);
