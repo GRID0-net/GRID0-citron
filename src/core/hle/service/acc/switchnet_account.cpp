@@ -16,6 +16,7 @@
 
 #include "common/common_types.h"
 #include "common/logging.h"
+#include "core/hle/service/sockets/private_server.h"
 #include "common/settings.h"
 #include "core/hle/service/acc/switchnet_account.h"
 #include "core/hle/service/ssl/switchnet_ca.h"
@@ -43,9 +44,13 @@ std::set<std::string> reported_failures;
 // login is rate limited) with the same wrong password on every call.
 constexpr auto RetryAfterFailure = std::chrono::seconds(30);
 std::chrono::steady_clock::time_point last_failure;
+std::string last_failure_reason{"unknown"};
 
 void ReportFailure(const std::string& reason) {
-    if (reported_failures.insert(reason).second) {
+    last_failure_reason = reason;
+    // Deduplicated per process, except under network logging, where every attempt matters.
+    if (reported_failures.insert(reason).second ||
+        Service::Sockets::NetworkDiagnosticsEnabled()) {
         LOG_WARNING(Service_ACC,
                     "SwitchNet login failed: {}. The game gets no id token and will fail to reach "
                     "the game server",
@@ -269,6 +274,12 @@ bool EnsureLoggedIn() {
     const auto now = std::chrono::steady_clock::now();
     if (cached_for == identity && last_failure != std::chrono::steady_clock::time_point{} &&
         now - last_failure < RetryAfterFailure) {
+        // Silent before: a retry inside this window failed instantly with no explanation.
+        LOG_WARNING(Service_ACC,
+                    "SwitchNet login not retried: the last attempt failed {}s ago (retry after "
+                    "{}s). Reason: {}",
+                    std::chrono::duration_cast<std::chrono::seconds>(now - last_failure).count(),
+                    RetryAfterFailure.count(), last_failure_reason);
         return false;
     }
 
@@ -282,8 +293,13 @@ bool EnsureLoggedIn() {
     }
     last_failure = {};
 
-    LOG_INFO(Service_ACC, "Logged in to GRID0+ as {}",
-             Settings::values.switchnet_username.GetValue());
+    if (Service::Sockets::NetworkDiagnosticsEnabled()) {
+        LOG_WARNING(Service_ACC, "Logged in to GRID0+ as {}",
+                    Settings::values.switchnet_username.GetValue());
+    } else {
+        LOG_INFO(Service_ACC, "Logged in to GRID0+ as {}",
+                 Settings::values.switchnet_username.GetValue());
+    }
     reported_failures.clear();
     cached_token = std::move(tokens->id);
     cached_access_token = std::move(tokens->access);

@@ -125,6 +125,10 @@ void SetPrivateServerTraceEnabled(bool enabled) {
     persistent_trace.store(enabled, std::memory_order_relaxed);
 }
 
+bool NetworkDiagnosticsEnabled() {
+    return persistent_trace.load(std::memory_order_relaxed);
+}
+
 bool TakePrivateServerTrace() {
     if (persistent_trace.load(std::memory_order_relaxed)) {
         std::scoped_lock lock{trace_mutex};

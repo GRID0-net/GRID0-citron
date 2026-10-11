@@ -76,6 +76,10 @@ void Stop() noexcept;
 /// Make buffered log output visible without stopping the logger.
 void Flush() noexcept;
 void SetGlobalFilter(const Filter& filter) noexcept;
+/// Extra filter rules appended whenever the filter is rebuilt from Settings::log_filter (frontend
+/// diagnostics such as network logging), so System::ApplySettings does not silently drop them.
+void SetFilterSuffix(std::string suffix);
+[[nodiscard]] std::string GetFilterSuffix();
 void SetColorConsoleBackendEnabled(bool enabled) noexcept;
 
 } // namespace Common::Log

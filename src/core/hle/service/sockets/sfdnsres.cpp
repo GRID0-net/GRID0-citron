@@ -318,6 +318,10 @@ static std::pair<u32, GetAddrInfoError> GetAddrInfoRequestImpl(HLERequestContext
 
     auto res = Network::GetAddressInfo(redirect.value_or(host), service);
     if (!res.has_value()) {
+        if (NetworkDiagnosticsEnabled()) {
+            LOG_WARNING(Network, "SwitchNet lookup: getaddrinfo({}, service={}) failed: {}", host,
+                        service.value_or("-"), Translate(Translate(res.error())));
+        }
         return {0, Translate(res.error())};
     }
 
@@ -333,6 +337,23 @@ static std::pair<u32, GetAddrInfoError> GetAddrInfoRequestImpl(HLERequestContext
 
     const std::vector<u8> data = SerializeAddrInfo(res.value(), host);
     const u32 data_size = static_cast<u32>(data.size());
+    if (NetworkDiagnosticsEnabled()) {
+        std::string entries;
+        for (const auto& addrinfo : res.value()) {
+            entries += fmt::format(" [family={} type={} proto={} {}:{} canon={}]",
+                                   static_cast<u32>(Translate(addrinfo.family)),
+                                   static_cast<u32>(Translate(addrinfo.socket_type)),
+                                   static_cast<u32>(Translate(addrinfo.protocol)),
+                                   Network::IPv4AddressToString(addrinfo.addr.ip),
+                                   addrinfo.addr.portno, addrinfo.canon_name.value_or("-"));
+        }
+        LOG_WARNING(Network,
+                    "SwitchNet lookup: getaddrinfo({}, service={}) -> {} entr{}, {} bytes for a "
+                    "{}-byte buffer:{}",
+                    host, service.value_or("-"), res.value().size(),
+                    res.value().size() == 1 ? "y" : "ies", data_size, ctx.GetWriteBufferSize(0),
+                    entries);
+    }
     ctx.WriteBuffer(data, 0);
 
     return {data_size, GetAddrInfoError::SUCCESS};

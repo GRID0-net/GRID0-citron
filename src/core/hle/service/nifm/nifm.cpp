@@ -11,6 +11,7 @@
 #include "core/hle/service/kernel_helpers.h"
 #include "core/hle/service/nifm/nifm.h"
 #include "core/hle/service/server_manager.h"
+#include "core/hle/service/sockets/private_server.h"
 #include "network/network.h"
 
 namespace {
@@ -321,6 +322,11 @@ private:
         const auto new_state = Network::GetHostIPv4Address().has_value() ? RequestState::Accepted
                                                                         : RequestState::Free;
         if (state != new_state) {
+            if (Service::Sockets::NetworkDiagnosticsEnabled()) {
+                LOG_WARNING(Service_NIFM, "Network request state {} -> {} (host IPv4 {})",
+                            static_cast<u32>(state), static_cast<u32>(new_state),
+                            new_state == RequestState::Accepted ? "available" : "unavailable");
+            }
             UpdateState(new_state);
         }
         return state;

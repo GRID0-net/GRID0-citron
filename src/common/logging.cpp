@@ -478,6 +478,18 @@ void SetGlobalFilter(const Filter& filter) noexcept {
     if (logging_instance)
         logging_instance->filter = filter;
 }
+namespace {
+std::mutex filter_suffix_mutex;
+std::string filter_suffix;
+} // namespace
+void SetFilterSuffix(std::string suffix) {
+    std::scoped_lock lock{filter_suffix_mutex};
+    filter_suffix = std::move(suffix);
+}
+std::string GetFilterSuffix() {
+    std::scoped_lock lock{filter_suffix_mutex};
+    return filter_suffix;
+}
 void SetColorConsoleBackendEnabled(bool enabled) noexcept {
     if (logging_instance)
         logging_instance->color_console_backend.enabled = enabled;

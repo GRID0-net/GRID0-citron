@@ -1,16 +1,82 @@
 // SPDX-FileCopyrightText: Copyright 2024 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <fstream>
+#include <sstream>
+#include <string>
+
 #include "common/alignment.h"
+#include "common/logging.h"
+#include "common/settings.h"
 #include "core/core.h"
 #include "core/file_sys/content_archive.h"
 #include "core/file_sys/nca_metadata.h"
 #include "core/file_sys/registered_cache.h"
 #include "core/file_sys/romfs.h"
 #include "core/hle/service/filesystem/filesystem.h"
+#include "core/hle/service/sockets/private_server.h"
 #include "core/hle/service/ssl/cert_store.h"
+#include "core/hle/service/ssl/switchnet_ca.h"
 
 namespace Service::SSL {
+
+namespace {
+// Ids for certificates that are not in the console's store. Outside Nintendo's numbering.
+constexpr s32 PrivateServerCertificateIdBase = 0x7E000000;
+
+/// DER bodies of every CERTIFICATE block in a PEM text.
+std::vector<std::vector<u8>> PemToDer(std::string_view pem) {
+    static constexpr std::string_view Begin = "-----BEGIN CERTIFICATE-----";
+    static constexpr std::string_view End = "-----END CERTIFICATE-----";
+    std::vector<std::vector<u8>> out;
+    size_t pos = 0;
+    while ((pos = pem.find(Begin, pos)) != std::string_view::npos) {
+        const size_t body = pos + Begin.size();
+        const size_t end = pem.find(End, body);
+        if (end == std::string_view::npos) {
+            break;
+        }
+        std::vector<u8> der;
+        u32 buffer = 0;
+        int bits = 0;
+        for (const char c : pem.substr(body, end - body)) {
+            int value;
+            if (c >= 'A' && c <= 'Z') {
+                value = c - 'A';
+            } else if (c >= 'a' && c <= 'z') {
+                value = c - 'a' + 26;
+            } else if (c >= '0' && c <= '9') {
+                value = c - '0' + 52;
+            } else if (c == '+') {
+                value = 62;
+            } else if (c == '/') {
+                value = 63;
+            } else {
+                continue; // whitespace and '=' padding
+            }
+            buffer = (buffer << 6) | static_cast<u32>(value);
+            bits += 6;
+            if (bits >= 8) {
+                bits -= 8;
+                der.push_back(static_cast<u8>((buffer >> bits) & 0xFF));
+            }
+        }
+        if (!der.empty()) {
+            out.push_back(std::move(der));
+        }
+        pos = end + End.size();
+    }
+    return out;
+}
+
+std::string DescribeIds(std::span<const CaCertificateId> ids) {
+    std::string out;
+    for (const auto id : ids) {
+        out += fmt::format("{}{}", out.empty() ? "" : ",", static_cast<s32>(id));
+    }
+    return out.empty() ? "none" : out;
+}
+} // namespace
 
 // https://switchbrew.org/wiki/SSL_services#CertStore
 
@@ -23,10 +89,16 @@ CertStore::CertStore(Core::System& system) {
     const auto nca =
         fsc.GetSystemNANDContents()->GetEntry(CertStoreDataId, FileSys::ContentRecordType::Data);
     if (!nca) {
+        LOG_WARNING(Service_SSL,
+                    "No system CertStore (system data {:016X} is not installed): games that load "
+                    "trusted root certificates (Splatoon 3's gRPC client) get none. Install "
+                    "firmware to fix.",
+                    CertStoreDataId);
         return;
     }
     const auto romfs = nca->GetRomFS();
     if (!romfs) {
+        LOG_WARNING(Service_SSL, "The CertStore system data could not be read (missing keys?)");
         return;
     }
     const auto extracted = FileSys::ExtractRomFS(romfs);
@@ -71,6 +143,37 @@ CertStore::CertStore(Core::System& system) {
                                 entry.der_size, entry.der_offset + sizeof(header)),
                         });
     }
+    LOG_INFO(Service_SSL, "Loaded {} trusted certificates from the system CertStore",
+             m_certs.size());
+}
+
+std::map<CaCertificateId, CertStore::Certificate> CertStore::PrivateServerCertificates() const {
+    std::map<CaCertificateId, Certificate> out;
+    if (Service::Sockets::PrivateServerAddress().empty()) {
+        return out;
+    }
+    // A console set up for SwitchNet trusts its CA system-wide, so a game that builds its own
+    // TLS trust store from this list (gRPC does) trusts the private server too. Without it the
+    // game's NPLN client cannot verify the GRID0+ server.
+    std::string pem{SwitchNetLocalCaPem};
+    const std::string& bundle = Settings::values.private_server_ca_bundle.GetValue();
+    if (!bundle.empty()) {
+        std::ifstream file{bundle};
+        std::stringstream text;
+        text << file.rdbuf();
+        if (file) {
+            pem = text.str();
+        } else {
+            LOG_ERROR(Service_SSL, "Could not read the private server CA bundle {}", bundle);
+        }
+    }
+    s32 id = PrivateServerCertificateIdBase;
+    for (auto& der : PemToDer(pem)) {
+        out.emplace(static_cast<CaCertificateId>(id++),
+                    Certificate{.status = TrustedCertStatus::EnabledTrusted,
+                                .der_data = std::move(der)});
+    }
+    return out;
 }
 
 CertStore::~CertStore() = default;
@@ -90,6 +193,10 @@ void CertStore::ForEachCertificate(std::span<const CaCertificateId> certificate_
             f(*entry);
         }
     }
+    // The private server's CA is appended to every request while a redirect is active.
+    for (const auto& entry : PrivateServerCertificates()) {
+        f(entry);
+    }
 }
 
 Result CertStore::GetCertificates(u32* out_num_entries, std::span<u8> out_data,
@@ -98,6 +205,10 @@ Result CertStore::GetCertificates(u32* out_num_entries, std::span<u8> out_data,
     u32 required_size;
     R_TRY(this->GetCertificateBufSize(std::addressof(required_size), out_num_entries,
                                       certificate_ids));
+    if (out_data.size_bytes() < required_size) {
+        LOG_WARNING(Service_SSL, "GetCertificates: buffer of {} bytes is smaller than the {} required",
+                    out_data.size_bytes(), required_size);
+    }
     R_UNLESS(out_data.size_bytes() >= required_size, ResultUnknown);
 
     // Make parallel arrays.
@@ -135,6 +246,12 @@ Result CertStore::GetCertificates(u32* out_num_entries, std::span<u8> out_data,
                 cert_infos.size() * sizeof(BuiltInCertificateInfo));
     std::memcpy(out_data.data() + der_data_offset, der_datas.data(), der_datas.size());
 
+    if (Service::Sockets::NetworkDiagnosticsEnabled() || *out_num_entries == 0) {
+        LOG_WARNING(Service_SSL,
+                    "GetCertificates(ids={}) -> {} certificate(s), {} bytes ({} from the system "
+                    "store, the rest the private server CA)",
+                    DescribeIds(certificate_ids), *out_num_entries, required_size, m_certs.size());
+    }
     R_SUCCEED();
 }
 

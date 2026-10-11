@@ -27,15 +27,19 @@ public:
                                  std::span<const CaCertificateId> certificate_ids);
 
 private:
-    template <typename F>
-    void ForEachCertificate(std::span<const CaCertificateId> certs, F&& f);
-
-private:
     struct Certificate {
         TrustedCertStatus status;
         std::vector<u8> der_data;
     };
 
+    template <typename F>
+    void ForEachCertificate(std::span<const CaCertificateId> certs, F&& f);
+
+    /// The private server's CA (configured bundle or built-in SwitchNet Local CA) while a GRID0+
+    /// redirect is active; empty otherwise. Rebuilt per call so settings changes apply.
+    std::map<CaCertificateId, Certificate> PrivateServerCertificates() const;
+
+private:
     std::map<CaCertificateId, Certificate> m_certs;
 };
 

@@ -31,6 +31,7 @@
 #include "core/hle/service/acc/errors.h"
 #include "core/hle/service/acc/profile_manager.h"
 #include "core/hle/service/acc/switchnet_account.h"
+#include "core/hle/service/sockets/private_server.h"
 #include "core/hle/service/cmif_serialization.h"
 #include "core/hle/service/glue/glue_manager.h"
 #include "core/hle/service/ns/ns_types.h"
@@ -605,7 +606,16 @@ public:
 static u32 WriteSwitchNetIdToken(HLERequestContext& ctx) {
     const std::optional<std::string> token = SwitchNet::GetIdToken();
     if (!token) {
+        if (Service::Sockets::NetworkDiagnosticsEnabled() || SwitchNet::IsConfigured()) {
+            LOG_WARNING(Service_ACC, "GRID0+: the game asked for its id token and got none; it "
+                                     "will report a sign-in error (2321-4992). See the SwitchNet "
+                                     "login lines above for why.");
+        }
         return 0;
+    }
+    if (Service::Sockets::NetworkDiagnosticsEnabled()) {
+        LOG_WARNING(Service_ACC, "GRID0+: id token handed to the game ({} bytes, buffer {})",
+                    token->size(), ctx.CanWriteBuffer() ? ctx.GetWriteBufferSize() : 0);
     }
     if (!ctx.CanWriteBuffer() || token->size() > ctx.GetWriteBufferSize()) {
         LOG_ERROR(Service_ACC, "The SwitchNet id token is {} bytes; the game offered {}",

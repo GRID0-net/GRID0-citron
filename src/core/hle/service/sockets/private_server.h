@@ -38,4 +38,8 @@ void SetPrivateServerTraceEnabled(bool enabled);
 /// connection cannot flood the log.
 bool TakePrivateServerTrace();
 
+/// True while the frontend's network logging is on: services then report their decisions on the
+/// GRID0+ path (lookups, tokens, NIFM state) at Warning, where a default-filtered log keeps them.
+bool NetworkDiagnosticsEnabled();
+
 } // namespace Service::Sockets

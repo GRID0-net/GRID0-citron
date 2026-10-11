@@ -1119,7 +1119,8 @@ void System::Exit() {
 
 void System::ApplySettings() {
     Common::Log::Filter filter;
-    filter.ParseFilterString(Settings::values.log_filter.GetValue());
+    filter.ParseFilterString(Settings::values.log_filter.GetValue() + ' ' +
+                             Common::Log::GetFilterSuffix());
     Common::Log::SetGlobalFilter(filter);
 
     impl->RefreshTime(*this);
