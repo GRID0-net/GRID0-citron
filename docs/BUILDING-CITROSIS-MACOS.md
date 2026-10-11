@@ -24,9 +24,13 @@ From the repository root:
 
 ```sh
 ./build-citrosis-macos.sh --setup
-./build-citrosis-macos.sh
-open build-macos/bin/citrosis-mac.app
+./build-citrosis-macos.sh --jobs 8
+open build-macos/dist/Citrosis.app
 ```
+
+Every build finishes with `build-macos/dist/Citrosis.app` (dependencies bundled, icon
+installed, ad-hoc signed). `--dev-only` stops after the development bundle
+`build-macos/bin/citrosis-mac.app`.
 
 The native build uses the architecture of the active compiler. Use a native
 Apple Silicon terminal and Homebrew rather than running these commands in
@@ -93,10 +97,12 @@ if switching frontends frequently.
 open build-macos/dist/Citrosis.app
 ```
 
+`--package` additionally zips the finished app.
+
 Packaging stages a separate bundle, copies transitive dynamic dependencies without
 Qt using `tools/macos/deploy_native.py`, checks the Mach-O dependency lists for external build
 paths, ad-hoc signs the app with the JIT and Apple Hypervisor entitlements, verifies the signature,
-and creates `build-macos/dist/Citrosis-arm64.zip`. Deployment or
+and, with `--package`, creates `build-macos/dist/Citrosis-arm64.zip`. Deployment or
 signature failures stop the script. A successful package replaces the previous
 generated `Citrosis.app`. The development bundle remains in `bin/citrosis-mac.app`.
 Bundle display name and identifier are Citrosis and `org.citrosis.emulator`;

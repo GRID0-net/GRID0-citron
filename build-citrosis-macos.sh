@@ -9,6 +9,7 @@ jobs=1
 package=0
 configure_only=0
 qt=0
+dev_only=0
 extra_cmake=()
 
 usage() {
@@ -19,7 +20,8 @@ Usage: ./build-citrosis-macos.sh [options] [-- CMake options]
   --jobs N            Parallel compiler jobs (default: 1)
   --qt               Build the legacy Qt frontend instead of Swift
   --configure-only   Configure without compiling
-  --package          Also deploy and ad-hoc sign dist/Citrosis.app and create a ZIP
+  --package          Also create a ZIP of the finished app
+  --dev-only         Only build the development bundle in bin/ (skip dist/Citrosis.app)
   --help             Show this help
 EOF
 }
@@ -38,6 +40,7 @@ while (($#)); do
         --qt) qt=1; shift ;;
         --configure-only) configure_only=1; shift ;;
         --package) package=1; shift ;;
+        --dev-only) dev_only=1; shift ;;
         --help|-h) usage; exit 0 ;;
         --) shift; extra_cmake=("$@"); break ;;
         *) echo "Unknown option: $1" >&2; usage >&2; exit 1 ;;
@@ -77,29 +80,42 @@ cmake -S "$root" -B "$build_dir" -G Ninja \
 ((configure_only)) && exit 0
 cmake --build "$build_dir" --target "$frontend_target" --parallel "$jobs"
 build_dir=$(cd "$build_dir" && pwd)
+mkdir -p "$build_dir/bin/$source_app/Contents/Resources"
+cp -f "$root/dist/citron.icns" "$build_dir/bin/$source_app/Contents/Resources/citron.icns"
 codesign --force --sign - --entitlements "$root/dist/macos/Citrosis.entitlements" "$build_dir/bin/$source_app"
 if [[ -f "$build_dir/bin/citron-cmd" ]]; then
     codesign --force --sign - --entitlements "$root/dist/macos/Citrosis.entitlements" "$build_dir/bin/citron-cmd"
 fi
 echo "Built: $build_dir/bin/$source_app"
 
+((dev_only)) && exit 0
+
+# Finished app: build-macos/dist/Citrosis.app (dependencies bundled, icon checked, signed).
+dist_dir="$build_dir/dist"
+mkdir -p "$dist_dir"
+stage=$(mktemp -d "$dist_dir/.stage-XXXXXX")
+trap 'rm -rf "$stage"' EXIT
+app="$stage/Citrosis.app"
+ditto "$build_dir/bin/$source_app" "$app"
+# The bundle copy step can be skipped by Ninja when the icon is unchanged; always install it.
+mkdir -p "$app/Contents/Resources"
+cp -f "$root/dist/citron.icns" "$app/Contents/Resources/citron.icns"
+if ((qt)); then
+    "$qt_prefix/bin/macdeployqt" "$app" -always-overwrite -codesign=-
+    python3 "$root/tools/macos/verify_bundle.py" "$app"
+else
+    python3 "$root/tools/macos/deploy_native.py" "$app" --entitlements "$root/dist/macos/Citrosis.entitlements"
+fi
+codesign --force --sign - --entitlements "$root/dist/macos/Citrosis.entitlements" "$app"
+codesign --verify --deep --strict "$app"
+# Replace only the finished app after deployment and verification pass.
+rm -rf "$dist_dir/Citrosis.app"
+mv "$app" "$dist_dir/Citrosis.app"
+# Make Finder/Dock pick up a changed icon instead of a cached one.
+touch "$dist_dir/Citrosis.app"
+echo "Finished app: $dist_dir/Citrosis.app"
+
 if ((package)); then
-    mkdir -p "$build_dir/dist"
-    stage=$(mktemp -d "$build_dir/dist/.stage-XXXXXX")
-    trap 'rm -rf "$stage"' EXIT
-    app="$stage/Citrosis.app"
-    ditto "$build_dir/bin/$source_app" "$app"
-    if ((qt)); then
-        "$qt_prefix/bin/macdeployqt" "$app" -always-overwrite -codesign=-
-        python3 "$root/tools/macos/verify_bundle.py" "$app"
-    else
-        python3 "$root/tools/macos/deploy_native.py" "$app" --entitlements "$root/dist/macos/Citrosis.entitlements"
-    fi
-    codesign --force --sign - --entitlements "$root/dist/macos/Citrosis.entitlements" "$app"
-    codesign --verify --deep --strict "$app"
-    ditto -c -k --keepParent "$app" "$build_dir/dist/Citrosis-$(uname -m).zip"
-    # Replace only the generated package after deployment and verification pass.
-    rm -rf "$build_dir/dist/Citrosis.app"
-    mv "$app" "$build_dir/dist/Citrosis.app"
-    echo "Packaged: $build_dir/dist/Citrosis.app"
+    ditto -c -k --keepParent "$dist_dir/Citrosis.app" "$dist_dir/Citrosis-$(uname -m).zip"
+    echo "Packaged: $dist_dir/Citrosis-$(uname -m).zip"
 fi
