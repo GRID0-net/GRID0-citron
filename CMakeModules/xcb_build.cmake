@@ -63,10 +63,24 @@ foreach(_comp ${_xcb_components})
         set(_url "https://xcb.freedesktop.org/dist/${_name}-${_ver}.tar.xz")
     endif()
     
+    set(_archive_urls "${_url}")
+    set(_archive_options)
+    if (_comp STREQUAL "renderutil" AND _xcb_renderutil_ver STREQUAL "0.3.10")
+        # The upstream dist host has reset release-runner TLS connections.
+        # Debian preserves the identical upstream tarball; its signed source
+        # manifest supplies this SHA256. Try that archive before the original
+        # host, keeping both downloads pinned to the same source bytes.
+        list(PREPEND _archive_urls
+            "https://deb.debian.org/debian/pool/main/x/xcb-util-renderutil/xcb-util-renderutil_0.3.10.orig.tar.xz")
+        set(_archive_options
+            URL_HASH "SHA256=3e15d4f0e22d8ddbfbb9f5d77db43eacd7a304029bf25a6166cc63caa96d04ba"
+            TIMEOUT 30)
+    endif()
     set(CMAKE_TLS_VERIFY OFF)
     CPMAddPackage(
         NAME xcb_${_comp}_src
-        URL "${_url}"
+        URL ${_archive_urls}
+        ${_archive_options}
         DOWNLOAD_ONLY YES
     )
 
