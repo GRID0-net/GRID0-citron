@@ -62,3 +62,12 @@ Every line that follows a lookup of a Nintendo host starts with `SwitchNet trace
 Warning, so it is in `citron_log.txt` with the default log filter: the socket calls the game made
 next, up to 256 of them per lookup. When reporting a problem, stop emulation before copying the
 log, so that it is complete.
+
+### Splatoon 3 three-player startup readiness
+
+The bundled 11.3.0 small-match IPS matches GRID0+ Toolbox 0.8.10. It waits for
+a completed assigned `All` peer-group roster and matching connected Pia count,
+rather than bypassing missing/unready connectivity. Native reference ownership
+is retained while inspecting the group; the original stability counter remains.
+A Switch-hosted three-player hotspot battle succeeded with this patch. Other
+build IDs remain unchanged. Restart the game to load the updated embedded IPS.
