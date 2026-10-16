@@ -390,6 +390,12 @@ build_linker_flags() {
     local debug_flag=""; [[ "${BUILD_TYPE}" == "RelWithDebInfo" ]] && debug_flag="-g"
     local lto_flag; lto_flag="$(lto_clang_flag)"
     local base="-fuse-ld=${LLD} -Wl,-z,nopack-relative-relocs"
+    # aarch64 kernels run with 4K, 16K (Asahi Linux on Apple silicon) or 64K pages, and a segment
+    # aligned for a smaller page than the kernel's cannot be mapped at all. Align for the largest
+    # so one binary loads on all of them; .github/workflows/release.yml checks every bundled ELF.
+    if [[ "$(uname -m)" == aarch64 ]]; then
+        base+=" -Wl,-z,max-page-size=65536"
+    fi
 
     case "${stage}" in
         generate|csgenerate)

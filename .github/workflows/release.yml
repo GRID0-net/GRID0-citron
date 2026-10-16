@@ -57,6 +57,28 @@ jobs:
             ghcr.io/pkgforge-dev/archlinux@sha256:f6fc7e14b0612a355d7ab50efb3cc40010ba28e4766860bd238d313b308f190b \
             bash -c './build-citron-linux.sh setup --inside-arch-container && ./build-citron-linux.sh use --inside-arch-container --pgo none --lto thin --jobs "$(nproc)"'
           sudo chown -R "$(id -u):$(id -g)" build
+      # Apple silicon under Asahi Linux runs a 16K-page kernel, which refuses to map any segment
+      # aligned for 4K pages: the AppImage then does not start at all. Every ELF in the AppDir
+      # (citron, sharun, glibc, Qt, Mesa, ...) and the AppImage runtime must be aligned for 16K.
+      - name: Check every bundled ELF loads with 16K pages
+        if: matrix.arch == 'aarch64'
+        run: |
+          set -euo pipefail
+          bad=0; checked=0
+          while IFS= read -r -d '' f; do
+            [ "$(head -c 4 "$f" | od -An -tx1 | tr -d ' \n')" = 7f454c46 ] || continue
+            checked=$((checked + 1))
+            min=0
+            for a in $(readelf -lW "$f" 2>/dev/null | awk '$1 == "LOAD" { print $NF }'); do
+              if [ "$min" -eq 0 ] || [ $((a)) -lt "$min" ]; then min=$((a)); fi
+            done
+            if [ "$min" -ne 0 ] && [ "$min" -lt 16384 ]; then
+              printf '::error::%s LOAD alignment %#x is below 16K\n' "${f#build/use-nopgo/AppImage/}" "$min"
+              bad=$((bad + 1))
+            fi
+          done < <(find build/use-nopgo/AppImage -type f \( -path '*AppDir*' -o -name '*.AppImage' \) -print0)
+          echo "checked $checked ELF files, $bad below 16K"
+          [ "$bad" -eq 0 ]
       - name: Collect
         run: |
           set -euo pipefail
