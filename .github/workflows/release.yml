@@ -1,4 +1,4 @@
-# Builds citron for Linux, Windows and macOS and publishes a GitHub release.
+# Builds citron for Linux, Windows, macOS and Android and publishes a GitHub release.
 #
 # Run it from the Actions tab with a version (for example 1.0.0), which creates the v<version>
 # tag, or push a v* tag yourself. Linux and Windows use the repository's own build scripts
@@ -21,7 +21,7 @@ on:
       platform:
         description: 'Platform to rebuild. Select macos to refresh only the macOS asset on an existing release.'
         type: choice
-        options: [all, linux, windows, macos]
+        options: [all, linux, windows, macos, android]
         default: all
 
 permissions:
@@ -136,15 +136,77 @@ jobs:
           name: macos
           path: out/*
 
+  # The Android app is a separate, Lemon-based tree on its own branch (citrosis-upstream.json
+  # there); main is the desktop tree. It is built from that branch's head and published with the
+  # same version as the desktop builds.
+  android:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'android' }}
+    name: Android (APK)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      CPM_SOURCE_CACHE: ${{ github.workspace }}/.cache/cpm
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/citrosis-android
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+            /usr/local/lib/android/sdk/ndk /usr/local/lib/android/sdk/emulator \
+            /usr/local/lib/android/sdk/system-images
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@v3
+        with:
+          # The action defaults to "tools platform-tools"; legacy tools is no longer published.
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: citrosis-android-gradle-${{ runner.os }}-${{ hashFiles('src/android/**/*.gradle*', 'src/android/gradle/wrapper/gradle-wrapper.properties', 'src/android/gradle/libs.versions.toml') }}
+          restore-keys: citrosis-android-gradle-${{ runner.os }}-
+      - uses: actions/cache@v4
+        with:
+          path: .cache/cpm
+          key: citrosis-android-cpm-${{ runner.os }}-${{ hashFiles('cpmfile.json', 'CMakeLists.txt', 'CMakeModules/**') }}
+          restore-keys: citrosis-android-cpm-${{ runner.os }}-
+      - name: Install host tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build glslang-tools autoconf automake libtool pkg-config nasm yasm
+      - name: Build
+        run: |
+          set -euo pipefail
+          export ANDROID_HOME="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
+          # build.gradle.kts takes the app's versionName from GIT_TAG_NAME under Actions.
+          GIT_TAG_NAME="${VERSION#v}" ./build-citrosis-android.sh --setup --jobs 2
+          mkdir -p out
+          cp build-android/Citrosis-release.apk out/citron-android-arm64.apk
+          ls -la out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: out/*
+
   publish:
     name: Publish the release
-    needs: [linux, windows, macos]
+    needs: [linux, windows, macos, android]
     if: >-
       ${{ !cancelled() && (github.event_name != 'workflow_dispatch' || inputs.publish != false) &&
           (needs.linux.result == 'success' || needs.linux.result == 'skipped') &&
           (needs.windows.result == 'success' || needs.windows.result == 'skipped') &&
           (needs.macos.result == 'success' || needs.macos.result == 'skipped') &&
-          (needs.linux.result == 'success' || needs.windows.result == 'success' || needs.macos.result == 'success') }}
+          (needs.android.result == 'success' || needs.android.result == 'skipped') &&
+          (needs.linux.result == 'success' || needs.windows.result == 'success' || needs.macos.result == 'success' ||
+           needs.android.result == 'success') }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
