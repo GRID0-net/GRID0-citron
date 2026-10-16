@@ -1,8 +1,10 @@
 # Citron Neo
 A Modified Switch emulator for Windows, Mac, Linux, and Android! providing online play for the Splatoon games via GRID0+!
 
-Performant on all platforms, with splatoon 3 specific fixes for arm64, Ram optimizations for android (8GB devices)
+Performant on all platforms, with Splatoon 3 specific fixes for arm64, Ram optimizations for android (8GB devices)
 and easy Server/Friend management!
+
+Grab the latest version from [Releases!](https://github.com/GRID0-net/GRID0-citron/releases)
 
 ![what](./dist/citron.svg)
 
