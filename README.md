@@ -1,4 +1,4 @@
-# Citron Neo
+# Citron Neo / Citrosis
 A Modified Switch emulator for Windows, Mac, Linux, and Android! providing online play for the Splatoon games via GRID0+!
 
 Performant on all platforms, with Splatoon 3 specific fixes for arm64, Ram optimizations for android (8GB devices)
