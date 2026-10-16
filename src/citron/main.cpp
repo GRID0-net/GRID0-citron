@@ -1310,6 +1310,19 @@ void GMainWindow::InitializeWidgets() {
         statusBar()->addPermanentWidget(label);
     }
 
+    // Release files carry no version in their names now that citron updates itself, so this is
+    // where a player reads which build they are on.
+    grid0_version_label = new QLabel();
+    grid0_version_label->setObjectName(QStringLiteral("Grid0VersionLabel"));
+    grid0_version_label->setFocusPolicy(Qt::NoFocus);
+    grid0_version_label->setContentsMargins(4, 0, 4, 0);
+    {
+        const QString version = QStringLiteral(GRID0_RELEASE_VERSION);
+        grid0_version_label->setText(version.isEmpty() ? tr("GRID0-citron dev build")
+                                                       : tr("GRID0-citron %1").arg(version));
+    }
+    statusBar()->addPermanentWidget(grid0_version_label);
+
     firmware_label = new QLabel();
     firmware_label->setObjectName(QStringLiteral("FirmwareLabel"));
     firmware_label->setVisible(false);

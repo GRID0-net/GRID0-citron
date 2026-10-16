@@ -453,6 +453,7 @@ private:
     QLabel* game_fps_label = nullptr;
     QLabel* emu_frametime_label = nullptr;
     QLabel* tas_label = nullptr;
+    QLabel* grid0_version_label = nullptr;
     QLabel* firmware_label = nullptr;
     QPushButton* gpu_accuracy_button = nullptr;
     QPushButton* renderer_status_button = nullptr;
