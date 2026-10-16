@@ -33,8 +33,16 @@ env:
 jobs:
   linux:
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'linux' }}
-    name: Linux (AppImage)
-    runs-on: ubuntu-24.04
+    name: Linux (AppImage, ${{ matrix.arch }})
+    # Native runners for each architecture: the build script and its Arch container (a
+    # multi-arch image) pick the architecture up from the machine.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x86_64,  runner: ubuntu-24.04 }
+          - { arch: aarch64, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - name: Free disk space
@@ -53,12 +61,12 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p out
-          find build/use-nopgo -name '*.AppImage' -exec cp {} "out/citron-linux-x86_64.AppImage" \; -quit
+          find build/use-nopgo -name '*.AppImage' -exec cp {} "out/citron-linux-${{ matrix.arch }}.AppImage" \; -quit
           ls -la out
           test -n "$(ls out)"
       - uses: actions/upload-artifact@v4
         with:
-          name: linux
+          name: linux-${{ matrix.arch }}
           path: out/*
 
   windows:
