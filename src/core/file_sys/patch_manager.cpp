@@ -523,11 +523,10 @@ std::vector<u8> PatchManager::PatchNSO(const std::vector<u8>& nso, const std::st
                 out = patched->ReadAllBytes();
         }
     }
-    for (const auto patch : GetPrivateServerPatches(build_id)) {
-        LOG_INFO(Loader, "    - Applying built-in private server patch");
-        const auto patched =
-            PatchIPS(std::make_shared<VectorVfsFile>(out),
-                     std::make_shared<VectorVfsFile>(std::vector<u8>(patch.begin(), patch.end())));
+    for (auto& patch : GetPrivateServerPatches(build_id)) {
+        LOG_INFO(Loader, "    - Applying GRID0+ private server patch");
+        const auto patched = PatchIPS(std::make_shared<VectorVfsFile>(out),
+                                      std::make_shared<VectorVfsFile>(std::move(patch)));
         if (patched != nullptr)
             out = patched->ReadAllBytes();
     }

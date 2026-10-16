@@ -37,9 +37,12 @@ the emulator logs in to another, and the game server rejects a token it never is
   the game the identity token your server signed, in place of the token it would otherwise make up.
   The server's certificate is checked against the same CA before your password is sent.
 * **Splatoon 3.** The game does TLS itself with pinned certificates, so trusting a CA never reaches
-  it. The two patches a console running SwitchNet installs as `exefs_patches` are applied
-  automatically, in memory, whenever a redirect address is set. They match the game's exact build:
-  a title update can stop them applying.
+  it. No patch ships inside citron: at every start it compares `<citron dir>/grid0plus/patches/`
+  with the newest `patches-<serial>` release of GRID0plus-cfw (the same release the console
+  Toolbox installs from), and if anything differs asks to download it and restart. Each file is
+  checked against the release manifest's SHA-256 before it is written. The patches are applied in
+  memory whenever a redirect address is set. They match the game's exact build: a title update can
+  stop them applying.
 * **Sockets.** The game's online client (gRPC) wakes its network loop through an `eventfd`, which
   citron did not implement. It now does, and a `poll` that includes one no longer ties up a socket
   service thread while it waits.

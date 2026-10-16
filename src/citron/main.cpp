@@ -158,6 +158,7 @@ static FileSys::VirtualFile VfsDirectoryCreateFileWrapper(const FileSys::Virtual
 #include "citron/loading_screen.h"
 #include "citron/main.h"
 #include "citron/grid0_friends_dialog.h"
+#include "citron/grid0_patch_update.h"
 #include "citron/grid0_update_check.h"
 #ifdef CITROSIS_SWIFT_UI
 #include "citron/macos/native_toolbar.h"
@@ -499,6 +500,8 @@ GMainWindow::GMainWindow(std::unique_ptr<QtConfig> config_, bool has_broken_vulk
     QApplication::processEvents();
 
     // Asynchronous: the window stays usable while GitHub answers, and a failure is only logged.
+    // Every launch: the Splatoon 3 patches are downloaded, never bundled.
+    Grid0::CheckPatchesOnBoot(this);
     Grid0::CheckForUpdateOnBoot(this);
 
     if (has_broken_vulkan) {

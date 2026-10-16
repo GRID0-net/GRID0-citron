@@ -248,6 +248,8 @@ add_executable(citron
     grid0_friends_dialog.h
     grid0_update_check.cpp
     grid0_update_check.h
+    grid0_patch_update.cpp
+    grid0_patch_update.h
     multiplayer/lobby.cpp
     multiplayer/lobby.h
     multiplayer/lobby.ui

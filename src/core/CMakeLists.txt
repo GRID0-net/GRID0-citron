@@ -1254,13 +1254,6 @@ else()
     )
 endif()
 
-# Embed the GRID0+ toolbox patches without depending on loose runtime files.
-include(GeneratePrivateServerPatches)
-generate_private_server_patches(
-    "${CMAKE_CURRENT_SOURCE_DIR}/file_sys/private_server_patches"
-    "${CMAKE_CURRENT_BINARY_DIR}/generated/private_server_patches_data.inc")
-target_include_directories(core PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
-
 # Link against all the libraries that are always required.
 target_link_libraries(core
     PUBLIC
