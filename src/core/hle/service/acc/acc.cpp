@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstring>
 
 #include "common/common_types.h"
 #include "common/fs/file.h"
@@ -833,14 +834,25 @@ private:
     }
 
     void GetNintendoAccountUserResourceCacheForApplication(HLERequestContext& ctx) {
-        LOG_WARNING(Service_ACC, "(STUBBED) called");
+        LOG_DEBUG(Service_ACC, "called");
 
+        // The SDK's GetBirthday reads a NUL-terminated date from the start of this record
+        // (NextendoNetwork citron d8cdcd9, "Splat 3 Plaza posts fix"); all zeros reads as an
+        // empty birthday. The record is the fixed-size C (pointer) buffer; WriteBuffer(…, 0)
+        // would prefer B slot 0, which is the separate type-6 out buffer.
         std::vector<u8> nas_user_base_for_application(0x68);
-        ctx.WriteBuffer(nas_user_base_for_application, 0);
+        constexpr char birthday[] = "2000-01-01";
+        std::memcpy(nas_user_base_for_application.data(), birthday, sizeof(birthday));
+        if (!ctx.BufferDescriptorC().empty() && ctx.BufferDescriptorC()[0].Size() > 0) {
+            ctx.WriteBufferC(nas_user_base_for_application.data(),
+                             std::min<std::size_t>(nas_user_base_for_application.size(),
+                                                   ctx.BufferDescriptorC()[0].Size()),
+                             0);
+        }
 
-        if (ctx.CanWriteBuffer(1)) {
-            std::vector<u8> unknown_out_buffer(ctx.GetWriteBufferSize(1));
-            ctx.WriteBuffer(unknown_out_buffer, 1);
+        if (!ctx.BufferDescriptorB().empty() && ctx.BufferDescriptorB()[0].Size() > 0) {
+            std::vector<u8> unknown_out_buffer(ctx.BufferDescriptorB()[0].Size());
+            ctx.WriteBufferB(unknown_out_buffer.data(), unknown_out_buffer.size(), 0);
         }
 
         IPC::ResponseBuilder rb{ctx, 4};
