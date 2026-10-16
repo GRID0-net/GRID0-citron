@@ -842,14 +842,29 @@ HostMemory::HostMemory(size_t backing_size_, size_t virtual_size_)
     , virtual_size(virtual_size_)
 {
     // Try to allocate a fastmem arena.
-    // The implementation will fail with std::bad_alloc on errors.
-    impl = std::make_unique<HostMemory::Impl>(AlignUp(backing_size, PageAlignment), AlignUp(virtual_size, PageAlignment) + HugePageSize);
-    backing_base = impl->backing_base;
-    virtual_base = impl->virtual_base;
-    if (virtual_base) {
-        // Ensure the virtual base is aligned to the L2 block size.
-        virtual_base = reinterpret_cast<u8*>(Common::AlignUp(uintptr_t(virtual_base), HugePageSize));
-        virtual_base_offset = virtual_base - impl->virtual_base;
+    // The implementation will fail with std::bad_alloc on errors -- among them a host whose page
+    // size is not 4K, such as Asahi Linux on Apple silicon (16K), which cannot map guest pages one
+    // at a time. Without this fallback such a host aborts at boot; with it, it runs without
+    // fastmem (dynarmic uses the page table, and NCE stays off: Settings::SetNceEnabled).
+    try {
+        impl = std::make_unique<HostMemory::Impl>(AlignUp(backing_size, PageAlignment),
+                                                  AlignUp(virtual_size, PageAlignment) +
+                                                      HugePageSize);
+        backing_base = impl->backing_base;
+        virtual_base = impl->virtual_base;
+        if (virtual_base) {
+            // Ensure the virtual base is aligned to the L2 block size.
+            virtual_base =
+                reinterpret_cast<u8*>(Common::AlignUp(uintptr_t(virtual_base), HugePageSize));
+            virtual_base_offset = virtual_base - impl->virtual_base;
+        }
+    } catch (const std::bad_alloc&) {
+        LOG_CRITICAL(HW_Memory,
+                     "Fastmem unavailable, falling back to VirtualBuffer for memory allocation");
+        impl.reset();
+        fallback_buffer = std::make_unique<Common::VirtualBuffer<u8>>(backing_size);
+        backing_base = fallback_buffer->data();
+        virtual_base = nullptr;
     }
 }
 

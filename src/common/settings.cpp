@@ -2,6 +2,9 @@
 // SPDX-FileCopyrightText: 2025 citron Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#if !defined(_WIN32)
+#include <unistd.h>
+#endif
 #include <version>
 #include "common/settings_enums.h"
 #if __cpp_lib_chrono >= 201907L
@@ -192,7 +195,18 @@ void SetNceEnabled(bool is_39bit) {
             Common,
             "Program does not utilize 39-bit address space, unable to natively execute code");
     }
-    is_nce_enabled = IsFastmemEnabled() && is_nce_selected && is_39bit;
+#if !defined(_WIN32)
+    // NCE maps guest pages straight onto host pages, so it needs the host to use 4K pages too.
+    // A 16K-page kernel (Asahi Linux on Apple silicon) has no fastmem arena (HostMemory falls
+    // back), and NCE there would run on a null base.
+    const bool host_4k_pages = sysconf(_SC_PAGESIZE) == 0x1000;
+    if (is_nce_selected && !host_4k_pages) {
+        LOG_WARNING(Common, "Host page size is not 4K, unable to natively execute code");
+    }
+#else
+    const bool host_4k_pages = true;
+#endif
+    is_nce_enabled = IsFastmemEnabled() && is_nce_selected && is_39bit && host_4k_pages;
 }
 
 bool IsNceEnabled() {

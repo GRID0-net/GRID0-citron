@@ -81,6 +81,8 @@ private:
     // Low level handler for the platform dependent memory routines
     class Impl;
     std::unique_ptr<Impl> impl;
+    // Backing memory when no fastmem arena could be created (e.g. a non-4K host page size).
+    std::unique_ptr<Common::VirtualBuffer<u8>> fallback_buffer;
     u8* backing_base{};
     u8* virtual_base{};
     size_t virtual_base_offset{};
