@@ -65,6 +65,10 @@ jobs:
 
       - name: Set up Android command-line tools
         uses: android-actions/setup-android@v3
+        with:
+          # The action defaults to "tools platform-tools"; legacy tools is no longer published.
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
 
       - name: Cache Gradle downloads
         uses: actions/cache@v4
