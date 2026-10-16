@@ -6,6 +6,12 @@ existing GRID0(+) / private-server integration.
 For the macOS build and packaging workflow, see
 [Building Citrosis on macOS](docs/BUILDING-CITROSIS-MACOS.md).
 
+The **Android edition of Citrosis** uses a separate Lemon/Eden-based source tree
+in this same repository: [codex/citrosis-android](https://github.com/GRID0-net/GRID0-citron/tree/codex/citrosis-android).
+See [Citrosis Android source and builds](docs/CITROSIS-ANDROID.md) for cloning,
+maintenance and the manual APK GitHub Action. This main branch retains the desktop
+and other existing platform implementations.
+
 ![what](./dist/citron.svg)
 
 Feel free to open issues and PRs to the repository.
