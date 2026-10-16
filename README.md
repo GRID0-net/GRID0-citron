@@ -1,16 +1,8 @@
 # Citron Neo
+A Modified Switch emulator for Windows, Mac, Linux, and Android! providing online play for the Splatoon games via GRID0+!
 
-This checkout is being adapted for macOS as **Citrosis**, while retaining its
-existing GRID0(+) / private-server integration.
-
-For the macOS build and packaging workflow, see
-[Building Citrosis on macOS](docs/BUILDING-CITROSIS-MACOS.md).
-
-The **Android edition of Citrosis** uses a separate Lemon/Eden-based source tree
-in this same repository: [codex/citrosis-android](https://github.com/GRID0-net/GRID0-citron/tree/codex/citrosis-android).
-See [Citrosis Android source and builds](docs/CITROSIS-ANDROID.md) for cloning,
-maintenance and the manual APK GitHub Action. This main branch retains the desktop
-and other existing platform implementations.
+Performant on all platforms, with splatoon 3 specific fixes for arm64, Ram optimizations for android (8GB devices)
+and easy Server/Friend management!
 
 ![what](./dist/citron.svg)
 
