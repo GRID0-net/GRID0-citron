@@ -53,7 +53,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p out
-          find build/use-nopgo -name '*.AppImage' -exec cp {} "out/citron-${VERSION#v}-linux-x86_64.AppImage" \; -quit
+          find build/use-nopgo -name '*.AppImage' -exec cp {} "out/citron-linux-x86_64.AppImage" \; -quit
           ls -la out
           test -n "$(ls out)"
       - uses: actions/upload-artifact@v4
@@ -79,7 +79,7 @@ jobs:
           mkdir -p out
           bin=$(dirname "$(find build -path '*use-nopgo*' -name citron.exe | head -n1)")
           test -f "$bin/citron.exe"
-          (cd "$bin" && zip -qr "$GITHUB_WORKSPACE/out/citron-${VERSION#v}-windows-x86_64.zip" .)
+          (cd "$bin" && zip -qr "$GITHUB_WORKSPACE/out/citron-windows-x86_64.zip" .)
           ls -la out
       - uses: actions/upload-artifact@v4
         with:
@@ -105,7 +105,7 @@ jobs:
           echo 'The native SwiftUI frontend requires an installed Xcode with macOS SDK 26 or later.' >&2
           exit 1
       - name: Install dependencies
-        run: ./build-citrosis-macos.sh --setup
+        run: GRID0_RELEASE_VERSION="${VERSION#v}" ./build-citrosis-macos.sh --setup
       - name: Build and package
         run: ./build-citrosis-macos.sh --package --build-dir build --jobs 3 -- -DCITROSIS_MACOS_VERSION="${VERSION#v}"
       - name: Verify the native app and release version
@@ -129,7 +129,7 @@ jobs:
           set -euo pipefail
           mkdir -p out
           # Keep the existing asset URL when replacing the legacy Qt app with Citrosis.
-          cp build/dist/Citrosis-arm64.zip "out/citron-${VERSION#v}-macos-arm64.zip"
+          cp build/dist/Citrosis-arm64.zip "out/citron-macos-arm64.zip"
           ls -la out
       - uses: actions/upload-artifact@v4
         with:
